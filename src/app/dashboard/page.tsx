@@ -8,17 +8,22 @@ export default function DashboardPage() {
   const [selectedLeague, setSelectedLeague] = useState<League | null>(null);
   const [team, setTeam] = useState<Team | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [teamLoading, setTeamLoading] = useState(false);
 
   useEffect(() => {
     fetch('/api/league')
-      .then(r => r.json())
+      .then(async r => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || data.error || '리그 정보를 불러오지 못했습니다.');
+        return data;
+      })
       .then(d => {
         if (d.code === 'AUTH_REQUIRED') window.location.href = '/';
         setLeagues(d.leagues || []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(e => { setError(e instanceof Error ? e.message : '리그 정보를 불러오지 못했습니다.'); setLoading(false); });
   }, []);
 
   const selectLeague = async (league: League) => {
@@ -60,7 +65,9 @@ export default function DashboardPage() {
       {/* League selector */}
       <div style={{ marginBottom: '2rem' }}>
         <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: '1rem', color: 'var(--text2)' }}>내 리그</h2>
-        {leagues.length === 0 ? (
+        {error ? (
+          <div className="card" style={{ color: 'var(--red)' }}>{error}</div>
+        ) : leagues.length === 0 ? (
           <div className="card" style={{ color: 'var(--text2)' }}>연동된 NBA 리그가 없어요.</div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
