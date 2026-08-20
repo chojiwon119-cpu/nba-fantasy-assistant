@@ -13,14 +13,18 @@ export default function DashboardPage() {
   useEffect(() => {
     fetch('/api/league')
       .then(r => r.json())
-      .then(d => { setLeagues(d.leagues || []); setLoading(false); })
+      .then(d => {
+        if (d.code === 'AUTH_REQUIRED') window.location.href = '/';
+        setLeagues(d.leagues || []);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   }, []);
 
   const selectLeague = async (league: League) => {
     setSelectedLeague(league);
     setTeamLoading(true);
-    const r = await fetch(`/api/league/team?league_key=${league.league_key}`);
+    const r = await fetch(`/api/league/team?league_key=${encodeURIComponent(league.league_key)}`);
     const d = await r.json();
     setTeam(d.team || null);
     setTeamLoading(false);
