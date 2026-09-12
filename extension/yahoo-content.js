@@ -110,18 +110,34 @@
       players,
     };
 
-    const state = await chrome.storage.local.get('latestYahooSnapshots');
+    const state = await chrome.storage.local.get(['latestYahooSnapshots', 'yahooPlayerDirectories']);
     const previous = Array.isArray(state.latestYahooSnapshots) ? state.latestYahooSnapshots : [];
-    // Keyed by the exact page URL (not just pageKind) so paginated lists like Players/FA
-    // (25 per page) accumulate across pages instead of each page overwriting the last.
-    // Revisiting the same URL still replaces just that one entry with fresher data.
+    // Keyed by the exact page URL so distinct paginated pages are kept as separate metadata
+    // entries; revisiting the same URL still refreshes just that one entry.
     const withoutCurrentPage = previous.filter((item) => item.pageUrl !== snapshot.pageUrl);
     const latestYahooSnapshots = [...withoutCurrentPage, snapshot]
       .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
       .slice(0, 40);
 
+    // Some Yahoo list views (Players/FA) page through results without changing the URL at
+    // all — they just swap the table contents via JS. Relying on per-page snapshots alone
+    // would then have each page overwrite the last regardless of the URL-based dedup above.
+    // So player identities are additionally accumulated into a per-league running directory,
+    // upserted one player at a time, which survives however Yahoo chooses to paginate.
+    const directories = state.yahooPlayerDirectories && typeof state.yahooPlayerDirectories === 'object'
+      ? state.yahooPlayerDirectories
+      : {};
+    const existingDirectory = directories[currentLeagueId]?.players || {};
+    const mergedPlayers = { ...existingDirectory };
+    players.forEach((player) => { mergedPlayers[player.yahooPlayerId] = player; });
+    const yahooPlayerDirectories = {
+      ...directories,
+      [currentLeagueId]: { updatedAt: snapshot.observedAt, players: mergedPlayers },
+    };
+
     await chrome.storage.local.set({
       latestYahooSnapshots,
+      yahooPlayerDirectories,
       lastYahooSyncAt: snapshot.observedAt,
     });
   }

@@ -10,6 +10,7 @@ window.addEventListener('message', async (event) => {
   if (event.data.type === REQUEST) {
     const state = await chrome.storage.local.get([
       'latestYahooSnapshots',
+      'yahooPlayerDirectories',
       'lastYahooSyncAt',
       'companionVersion',
       'readOnly',
@@ -23,6 +24,7 @@ window.addEventListener('message', async (event) => {
         version: state.companionVersion || '0.1.0',
         lastSyncAt: state.lastYahooSyncAt || null,
         snapshots: state.latestYahooSnapshots || [],
+        playerDirectories: state.yahooPlayerDirectories || {},
       },
     }, window.location.origin);
     return;

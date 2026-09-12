@@ -25,12 +25,15 @@ const MATCH_RESPONSE = 'NBA_ASSISTANT_MATCH_RESPONSE';
 const CACHE_KEY = 'nba-assistant-yahoo-snapshots';
 const RELAY_TIMEOUT_MS = 12000;
 
+type YahooPlayerDirectory = Record<string, { updatedAt: string; players: Record<string, YahooPageSnapshot['players'][number]> }>;
+
 interface CompanionState {
   installed: boolean;
   readOnly: boolean;
   version?: string;
   lastSyncAt?: string | null;
   snapshots: YahooPageSnapshot[];
+  playerDirectories: YahooPlayerDirectory;
 }
 
 interface NBAProviderState {
@@ -63,7 +66,7 @@ interface RelayPayload {
 
 type RelayStatus = 'idle' | 'waiting' | 'ready' | 'timeout';
 
-const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [] };
+const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [], playerDirectories: {} };
 const EMPTY_PROVIDER: NBAProviderState = {
   provider: 'ESPN NBA Public Data',
   configured: false,
@@ -110,9 +113,9 @@ export default function DashboardPage() {
     const cached = window.localStorage.getItem(CACHE_KEY);
     if (cached) {
       try {
-        const snapshots = JSON.parse(cached) as YahooPageSnapshot[];
+        const parsed = JSON.parse(cached) as { snapshots: YahooPageSnapshot[]; playerDirectories?: YahooPlayerDirectory };
         window.setTimeout(() => {
-          setCompanion((current) => ({ ...current, snapshots }));
+          setCompanion((current) => ({ ...current, snapshots: parsed.snapshots ?? [], playerDirectories: parsed.playerDirectories ?? {} }));
         }, 0);
       } catch {
         window.localStorage.removeItem(CACHE_KEY);
@@ -129,9 +132,10 @@ export default function DashboardPage() {
           installed: true,
           readOnly: payload.readOnly ?? current.readOnly,
           snapshots: payload.snapshots ?? current.snapshots,
+          playerDirectories: payload.playerDirectories ?? current.playerDirectories,
         };
-        if (payload.snapshots) {
-          window.localStorage.setItem(CACHE_KEY, JSON.stringify(payload.snapshots));
+        if (payload.snapshots || payload.playerDirectories) {
+          window.localStorage.setItem(CACHE_KEY, JSON.stringify({ snapshots: next.snapshots, playerDirectories: next.playerDirectories }));
         }
         return next;
       });
@@ -168,18 +172,18 @@ export default function DashboardPage() {
     ?? companion.snapshots.map((snapshot) => snapshot.observedAt).sort().at(-1)
     ?? null;
   const syncFreshness = freshness(latestSync);
-  const activeLeague = companion.snapshots[0]?.leagueId;
+  const activeLeague = companion.snapshots[0]?.leagueId ?? Object.keys(companion.playerDirectories)[0];
   const leagueSnapshots = useMemo(
     () => companion.snapshots.filter((snapshot) => !activeLeague || snapshot.leagueId === activeLeague),
     [activeLeague, companion.snapshots],
   );
+  // Read from the per-league player directory (accumulated one player at a time as pages are
+  // visited) rather than merging whole-page snapshots, since Yahoo's paginated list views
+  // (25 players/page) don't reliably produce a distinct snapshot per page — see yahoo-content.js.
   const observedPlayers = useMemo(() => {
-    const players = new Map<string, YahooPageSnapshot['players'][number]>();
-    leagueSnapshots.forEach((snapshot) => {
-      snapshot.players.forEach((player) => players.set(player.yahooPlayerId, player));
-    });
-    return [...players.values()];
-  }, [leagueSnapshots]);
+    if (!activeLeague) return [];
+    return Object.values(companion.playerDirectories[activeLeague]?.players ?? {});
+  }, [activeLeague, companion.playerDirectories]);
   const rostered = observedPlayers.filter((player) => player.availability === 'ROSTERED').length;
   const available = observedPlayers.filter((player) => ['FREE_AGENT', 'WAIVER'].includes(player.availability)).length;
   const pageCoverage = new Set(leagueSnapshots.map((snapshot) => snapshot.pageKind));
