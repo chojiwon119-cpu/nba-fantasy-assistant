@@ -74,8 +74,14 @@ export async function runProjectionModel(
   const playerById = new Map(players.map((player) => [player.id, player]));
 
   const projections = playerIds.map((playerId) => {
-    const player = playerById.get(playerId) ?? unknownPlayer(playerId);
     const playerStats = statsByPlayer.get(playerId) ?? [];
+    const latestStat = [...playerStats].sort((a, b) => b.date.localeCompare(a.date))[0];
+    const identity = playerById.get(playerId) ?? unknownPlayer(playerId);
+    const player = identity.teamId ? identity : {
+      ...identity,
+      teamId: latestStat?.teamId ?? '',
+      teamAbbreviation: latestStat?.teamAbbreviation ?? identity.teamAbbreviation,
+    };
     const allScheduledGames = games
       .filter((game) => game.status === 'scheduled' && game.date >= isoDate(range.start) && game.date <= isoDate(range.end))
       .filter((game) => game.homeTeamId === player.teamId || game.visitorTeamId === player.teamId)

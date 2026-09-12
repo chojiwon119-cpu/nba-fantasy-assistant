@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   const asOfValue = request.nextUrl.searchParams.get('as_of');
 
   if (playerIds.length === 0) {
-    return NextResponse.json({ error: 'player_ids에 BALLDONTLIE 선수 ID가 필요합니다.' }, { status: 400 });
+    return NextResponse.json({ error: 'player_ids에 현재 NBA 데이터 공급자의 선수 ID가 필요합니다.' }, { status: 400 });
   }
   if (playerIds.length > 25) {
     return NextResponse.json({ error: '한 번에 최대 25명까지 예측할 수 있습니다.' }, { status: 400 });

@@ -34,12 +34,14 @@ interface NBAProviderState {
   connected: boolean | null;
   modelVersion: string;
   requiredTier?: string;
+  injurySource?: string;
+  usage?: { used: number; limit: number; remaining: number } | null;
   message: string;
 }
 
 const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [] };
 const EMPTY_PROVIDER: NBAProviderState = {
-  provider: 'BALLDONTLIE',
+  provider: 'API-Sports API-NBA',
   configured: false,
   connected: false,
   modelVersion: 'nba-fpts-v1.0.0',
@@ -231,7 +233,8 @@ export default function DashboardPage() {
             <div className="panel-heading"><div><span className="eyebrow">DATA HEALTH</span><h2>판단 신뢰도</h2></div></div>
             <div className="health-row"><span>Yahoo 로스터</span><strong className={syncFreshness}>{relativeTime(latestSync)}</strong></div>
             <div className="health-row"><span>NBA 스탯</span><strong className={nbaProvider.connected ? 'fresh' : 'stale'}>{nbaProvider.connected ? `${nbaProvider.provider} 연결됨` : 'API 키 대기'}</strong></div>
-            <div className="health-row"><span>부상 정보</span><strong className={nbaProvider.connected ? 'fresh' : 'stale'}>{nbaProvider.connected ? '자동 반영 준비' : `${nbaProvider.requiredTier ?? 'ALL-STAR'} 필요`}</strong></div>
+            <div className="health-row"><span>부상 정보</span><strong className={companion.installed ? 'fresh' : 'stale'}>{companion.installed ? 'Yahoo 상태 수집됨' : 'Yahoo Companion 대기'}</strong></div>
+            <div className="health-row"><span>무료 요청량</span><strong className={nbaProvider.usage && nbaProvider.usage.remaining < 10 ? 'aging' : 'fresh'}>{nbaProvider.usage ? `${nbaProvider.usage.used} / ${nbaProvider.usage.limit}` : '키 설정 후 확인'}</strong></div>
             <div className="health-row"><span>예측 모델</span><strong className="fresh">v1 구현 완료</strong></div>
             <p className="health-footnote">핵심 데이터가 오래되거나 누락되면 과거 평균으로 대체하지 않고 추천을 중단합니다.</p>
           </aside>

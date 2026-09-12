@@ -86,21 +86,22 @@ PG×1, SG×1, G×1, SF×1, PF×1, F×1, C×2, UTIL×2, BN×3, IL×3, IL+×1 (총
 
 ## NBA 데이터 자동 수집 및 예측 모델 v1
 
-NBA 데이터는 공급자 어댑터를 통해 서버에서만 수집됩니다. 기본 공급자는
-[BALLDONTLIE](https://docs.balldontlie.io/)이며 API 키는 브라우저나 확장 프로그램으로
-전달되지 않습니다.
+NBA 데이터는 공급자 어댑터를 통해 서버에서만 수집됩니다. 기본 공급자는 무료
+[API-Sports API-NBA](https://api-sports.io/sports/nba)이며 API 키는 브라우저나 확장
+프로그램으로 전달되지 않습니다. BALLDONTLIE는 선택 가능한 유료 대체 공급자로 남겨둡니다.
 
-1. BALLDONTLIE에서 API 키를 발급합니다.
-2. `.env.example`을 참고해 로컬 `.env.local`에 `BALLDONTLIE_API_KEY`를 설정합니다.
+1. API-Sports에서 무료 API 키를 발급합니다. 신용카드는 필요하지 않습니다.
+2. `.env.example`을 참고해 로컬 `.env.local`에 `API_SPORTS_KEY`를 설정합니다.
 3. `/api/nba/status?probe=1`에서 연결 상태를 확인합니다.
 4. `/api/nba/players?search=Jokic`으로 선수 ID를 확인합니다.
-5. `/api/projections?player_ids=246&horizon=next_7_days`로 예측 결과를 확인합니다.
+5. 검색 결과의 숫자 ID를 `/api/projections?player_ids=선수ID&horizon=next_7_days`에 넣어 예측 결과를 확인합니다.
 
 예측 모델은 최근 15경기의 지수가중 분당 생산성, 예상 출전시간, 일정, 홈/원정,
 백투백, 상대팀 최근 실점 수준, 부상 상태를 경기별로 반영합니다. 결과에는 예상 총점과
 함께 P10/P50/P90, 데이터 품질, 신뢰도 및 적용된 요인이 포함됩니다. 최근 유효 표본이
 3경기 미만이면 `insufficient`로 표시합니다.
 
-BALLDONTLIE 공식 요금제 기준으로 선수·경기 일정은 Free에서 제공되지만 경기별 선수
-기록과 부상 정보는 ALL-STAR 이상에서 제공됩니다. 따라서 예측 모델 전체 기능에는
-ALL-STAR 이상의 권한이 필요합니다.
+API-Sports 무료 플랜의 일일 한도는 100회입니다. 앱은 기본 안전 한도를 90회로 제한하고,
+동일 요청 캐시와 진행 중 요청 병합을 통해 중복 호출을 방지합니다. 선수 상태는 유료 부상
+API 대신 Yahoo Companion이 현재 화면에서 읽은 GTD/OUT/IL 정보를 사용하도록 다음 연동
+단계에서 선수 ID 자동 매칭 후 모델에 전달합니다.

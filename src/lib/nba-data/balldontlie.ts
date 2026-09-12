@@ -6,6 +6,7 @@ import {
   NBAPlayerGameStat,
   NBAPlayerIdentity,
   NBAProviderError,
+  ProviderUsage,
 } from './types';
 
 const DEFAULT_BASE_URL = 'https://api.balldontlie.io/v1';
@@ -153,6 +154,10 @@ export class BallDontLieProvider implements NBADataProvider {
     ]);
   }
 
+  getUsage(): ProviderUsage | null {
+    return null;
+  }
+
   private async getAll<T>(
     path: string,
     initialParams: URLSearchParams,
@@ -269,6 +274,7 @@ function normalizeStat(stat: BDLStat): NBAPlayerGameStat {
   return {
     playerId: String(stat.player.id),
     teamId: String(stat.team.id),
+    teamAbbreviation: stat.team.abbreviation ?? '',
     gameId: String(stat.game.id),
     date: stat.game.date,
     minutes: parseMinutes(stat.min),

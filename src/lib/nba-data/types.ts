@@ -22,6 +22,7 @@ export interface NBAGame {
 export interface NBAPlayerGameStat {
   playerId: string;
   teamId: string;
+  teamAbbreviation?: string;
   gameId: string;
   date: string;
   minutes: number;
@@ -43,17 +44,28 @@ export interface DateRange {
 export interface NBADataProvider {
   readonly id: string;
   readonly displayName: string;
+  readonly configured: boolean;
   searchPlayers(query: string): Promise<NBAPlayerIdentity[]>;
   getPlayersByIds(playerIds: string[]): Promise<NBAPlayerIdentity[]>;
   getGames(range: DateRange): Promise<NBAGame[]>;
   getPlayerGameStats(playerIds: string[], range: DateRange): Promise<NBAPlayerGameStat[]>;
   getPlayerInjuries(playerIds: string[]): Promise<NBAInjury[]>;
+  probe(): Promise<void>;
+  getUsage(): ProviderUsage | null;
+}
+
+export interface ProviderUsage {
+  used: number;
+  limit: number;
+  remaining: number;
+  resetsAt: string;
 }
 
 export type ProviderErrorCode =
   | 'NOT_CONFIGURED'
   | 'UNAUTHORIZED'
   | 'RATE_LIMITED'
+  | 'UNSUPPORTED'
   | 'UPSTREAM_ERROR'
   | 'INVALID_RESPONSE';
 
