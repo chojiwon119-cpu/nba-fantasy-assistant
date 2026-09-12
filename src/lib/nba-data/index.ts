@@ -5,8 +5,10 @@ import { NBADataProvider } from './types';
 
 export function getNBADataProvider(): NBADataProvider {
   const provider = (process.env.NBA_DATA_PROVIDER ?? 'nba-official').toLowerCase();
-  if (provider === 'nba-official') return new NBAOfficialProvider();
-  if (provider === 'api-sports') return new APISportsNBAProvider();
+  // `api-sports` was the previous production default. Treat it as a migration
+  // alias so existing Vercel environments switch to the keyless provider too.
+  if (provider === 'nba-official' || provider === 'api-sports') return new NBAOfficialProvider();
+  if (provider === 'api-sports-legacy') return new APISportsNBAProvider();
   if (provider === 'balldontlie') return new BallDontLieProvider();
   throw new Error(`지원하지 않는 NBA 데이터 공급자입니다: ${provider}`);
 }

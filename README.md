@@ -89,7 +89,8 @@ PG×1, SG×1, G×1, SF×1, PF×1, F×1, C×2, UTIL×2, BN×3, IL×3, IL+×1 (총
 NBA 데이터는 공급자 어댑터를 통해 서버에서만 수집됩니다. 기본 공급자는 무료
 [NBA.com](https://www.nba.com/) 공식 데이터이며 API 키나 유료 구독이 필요하지 않습니다.
 공식 시즌 일정과 NBA Stats 게임로그를 서버에서 읽습니다. API-Sports와 BALLDONTLIE는
-선택 가능한 대체 공급자로만 남겨둡니다.
+선택 가능한 대체 공급자로만 남겨둡니다(`api-sports-legacy`, `balldontlie`). 기존 배포의
+`api-sports` 설정은 NBA 공식 공급자로 자동 마이그레이션됩니다.
 
 1. `.env.example`처럼 `NBA_DATA_PROVIDER=nba-official`을 사용합니다. 환경변수를 생략해도 이 값이 기본입니다.
 2. `/api/nba/status?probe=1`에서 공식 데이터 연결 상태를 확인합니다.
