@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "NBA Fantasy Assistant Companion",
+  "version": "0.1.0",
+  "description": "Reads the Yahoo Fantasy Basketball page currently open and shares a minimal, read-only snapshot with the personal Assistant.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://basketball.fantasysports.yahoo.com/*",
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://basketball.fantasysports.yahoo.com/*"],
+      "js": ["yahoo-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://localhost:3000/*"],
+      "js": ["assistant-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "NBA Fantasy Assistant Companion"
+  }
+}
+

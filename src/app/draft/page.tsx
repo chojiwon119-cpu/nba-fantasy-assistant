@@ -39,7 +39,10 @@ function DraftContent() {
     } finally { setLoading(false); }
   }, [leagueKey, myPosition, currentOverall, draftedKeys]);
 
-  useEffect(() => { fetchPlayers(); }, [fetchPlayers]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void fetchPlayers(), 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchPlayers]);
 
   const draftPlayer = (player: Player) => {
     setDraftedKeys(prev => [...prev, player.player_key]);
@@ -192,7 +195,7 @@ function DraftContent() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {myTeam.map((p, i) => (
+                {myTeam.map((p) => (
                   <div key={p.player_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 8px', background: 'var(--bg3)', borderRadius: 6 }}>
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 500 }}>{p.name}</div>

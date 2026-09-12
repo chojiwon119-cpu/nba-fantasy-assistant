@@ -133,8 +133,8 @@ function TradeContent() {
               </thead>
               <tbody>
                 {(['PTS','REB','AST','ST','BLK','TO','threePM','FGM','FTM','DD'] as const).map(stat => {
-                  const gv = result.giving.reduce((s, p) => s + (p.stats as any)[stat], 0);
-                  const rv = result.receiving.reduce((s, p) => s + (p.stats as any)[stat], 0);
+                  const gv = result.giving.reduce((s, p) => s + p.stats[stat], 0);
+                  const rv = result.receiving.reduce((s, p) => s + p.stats[stat], 0);
                   const diff = rv - gv;
                   const isNeg = stat === 'TO';
                   const good = isNeg ? diff < 0 : diff > 0;

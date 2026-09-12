@@ -1,6 +1,6 @@
 # 🏀 NBA Fantasy Assistant
 
-Yahoo Fantasy NBA 리그 자동 연동 기반의 드래프트 · 트레이드 · 웨이버 분석 도구
+Yahoo Fantasy Basketball을 변경하지 않고, 현재 열린 리그 화면을 읽기 전용으로 자동 반영하는 개인용 예측·의사결정 도구입니다.
 
 ## 시작하기
 
@@ -9,36 +9,44 @@ Yahoo Fantasy NBA 리그 자동 연동 기반의 드래프트 · 트레이드 ·
 npm install
 ```
 
-### 2. 환경변수 설정
-`.env.local` 파일이 이미 생성되어 있습니다. 필요 시 수정하세요:
-```
-YAHOO_CLIENT_ID=your_client_id
-YAHOO_CLIENT_SECRET=your_client_secret
-YAHOO_REDIRECT_URI=http://localhost:3000/api/auth/callback
-```
-
-### 3. 개발 서버 실행
+### 2. 개발 서버 실행
 ```bash
 npm run dev
 ```
-http://localhost:3000 접속 후 Yahoo 로그인
+
+`http://localhost:3000`에 접속합니다.
+
+### 3. Yahoo Companion 설치
+
+1. Chrome에서 `chrome://extensions`를 엽니다.
+2. 개발자 모드를 켭니다.
+3. `압축해제된 확장 프로그램을 로드합니다`를 선택합니다.
+4. 저장소의 `extension` 폴더를 선택합니다.
+5. Yahoo Fantasy Basketball과 Assistant 대시보드를 새로고침합니다.
+
+확장 프로그램은 사용자가 현재 열어 본 Yahoo 화면의 선수·로스터 정보만 로컬에 저장합니다. Yahoo로 추가 요청을 보내거나 지명, Add/Drop, Waiver, Trade, Lineup 변경을 실행하지 않습니다.
 
 ## 주요 기능
 
-### 📋 드래프트 어시스턴트 (`/draft`)
+### 📊 My Playbook (`/dashboard`)
+- Yahoo Companion 연결 및 데이터 신선도 확인
+- 현재 관측된 선수·로스터·FA/Waiver 상태 요약
+- 검증된 예측 데이터가 없으면 추천을 생성하지 않는 fail-closed 구조
+
+### 📋 드래프트 어시스턴트 (`/mock-draft`)
 - Snake draft 순서 자동 계산 (6팀, 13라운드)
 - 커스텀 배점 기반 Fantasy Score 실시간 계산
 - 포지션 밸런스 체크 (필요 포지션 강조)
 - 타팀 픽 처리로 잔여 선수풀 자동 업데이트
 - 내 픽까지 남은 픽 수 카운트다운
 
-### 🔄 트레이드 분석기 (`/trade`)
+### 🔄 트레이드 분석기 (`/trade`, 전환 예정)
 - player_key 기반 다자 트레이드 분석
 - 스탯별 상세 비교 (PTS/REB/AST/ST/BLK/TO 등)
 - 공정성 점수 (0~100) + 판정 (유리/불리/균형)
 - 부상 상태 반영
 
-### ➕ 웨이버 어드바이저 (`/waiver`)
+### ➕ 웨이버 어드바이저 (`/waiver`, 전환 예정)
 - FA 선수 Fantasy Score 순위 목록
 - 픽업 vs 컷 1:1 비교 분석
 - "픽업 추천 / 기다려라 / 패스" 3단계 판정
@@ -66,6 +74,12 @@ http://localhost:3000 접속 후 Yahoo 로그인
 PG×1, SG×1, G×1, SF×1, PF×1, F×1, C×2, UTIL×2, BN×3, IL×3, IL+×1 (총 17명)
 드래프트: 액티브 10명 + BN 3명 = 13명
 
-## Yahoo Developer App 설정
-Yahoo Developer Console에서 Callback URI를 `http://localhost:3000/api/auth/callback`으로 설정해주세요.
-배포 시에는 실제 도메인으로 변경이 필요합니다.
+## 예측 엔진 원칙
+
+모든 조언은 동일한 경기별 예측에서 출발하며, 기능별로 다음 기간의 예상 팀 증분점수를 사용합니다.
+
+- 드래프트: 잔여 시즌 예상점수와 대체선수 대비 가치
+- 웨이버: 향후 7일·14일 실제 선발 예상점수 증가분
+- 트레이드: 거래 전후 최적 로스터의 잔여 시즌 예상점수 차이
+
+예측에는 예상 경기 수, 출전확률, 예상 출장시간, 불확실성 범위와 모델 버전을 포함합니다. 현재 정적 선수 데이터는 외부 데이터 공급자 연결 전의 오프라인 임시 자료이며 실전 추천 자료로 간주하지 않습니다.

@@ -24,30 +24,7 @@ export interface DBPlayer {
   adp: number;
 }
 
-function calcScore(s: DBPlayer['stats']): number {
-  return (
-    s.FGM * 2 + s.FGA * -1 +
-    s.FTM * 1.5 + s.FTA * -1 +
-    s.threePM * 3 + s.threePA * -1 +
-    s.PTS * 1 + s.REB * 1.2 +
-    s.AST * 1.8 + s.ST * 3 +
-    s.BLK * 3 + s.TO * -1 +
-    s.DD * 3 + s.TD * 5
-  );
-}
-
-// Projection: 이전 시즌 스탯 기반 + 나이/부상 보정
-function project(p: DBPlayer): number {
-  let base = calcScore(p.stats);
-  // 나이 보정: 27세 이하 +3%, 32세 이상 -3%
-  if (p.age <= 27) base *= 1.03;
-  else if (p.age >= 32) base *= 0.97;
-  // 부상 이력 보정
-  if (p.stats.GP < 55) base *= 0.95;
-  return Math.round(base * 100) / 100;
-}
-
-export const NBA_PLAYERS: DBPlayer[] = [
+const NBA_PLAYERS_RAW: DBPlayer[] = [
   // ── S-TIER ──────────────────────────────────────────────────────────────────
   { id:'p001', name:'Nikola Jokic', nbaTeam:'DEN', positions:['C'], age:29,
     stats:{GP:79,MPG:35.1,FGM:11.8,FGA:19.8,FTM:5.6,FTA:6.8,threePM:0.8,threePA:2.4,PTS:29.6,REB:12.7,AST:10.2,ST:1.8,BLK:0.9,TO:3.4,DD:55,TD:28}, status:'active', adp:1.2 },
@@ -533,7 +510,7 @@ export function getFantasyScore(s: DBPlayer['stats']): number {
     s.PTS * 1 + s.REB * 1.2 +
     s.AST * 1.8 + s.ST * 3 +
     s.BLK * 3 + s.TO * -1 +
-    s.DD * 3 + s.TD * 5
+    (s.DD / Math.max(1, s.GP)) * 3 + (s.TD / Math.max(1, s.GP)) * 5
   ) * 100) / 100;
 }
 
@@ -547,14 +524,15 @@ export function getProjectedScore(p: DBPlayer, customWeights?: Record<string, nu
     s.PTS * (w.PTS ?? 1) + s.REB * (w.REB ?? 1.2) +
     s.AST * (w.AST ?? 1.8) + s.ST * (w.ST ?? 3) +
     s.BLK * (w.BLK ?? 3) + s.TO * (w.TO ?? -1) +
-    s.DD * (w.DD ?? 3) + s.TD * (w.TD ?? 5)
+    (s.DD / Math.max(1, s.GP)) * (w.DD ?? 3) +
+    (s.TD / Math.max(1, s.GP)) * (w.TD ?? 5)
   );
   // 나이 보정
   let mult = 1.0;
   if (p.age <= 24) mult = 1.05;
   else if (p.age <= 27) mult = 1.02;
-  else if (p.age >= 33) mult = 0.97;
   else if (p.age >= 36) mult = 0.93;
+  else if (p.age >= 33) mult = 0.97;
   // 출장 보정 (GP < 60이면 위험)
   if (p.stats.GP < 50) mult *= 0.88;
   else if (p.stats.GP < 65) mult *= 0.94;
@@ -564,3 +542,9 @@ export function getProjectedScore(p: DBPlayer, customWeights?: Record<string, nu
 export function sortedByProjection(players: DBPlayer[], weights?: Record<string, number>): DBPlayer[] {
   return [...players].sort((a, b) => getProjectedScore(b, weights) - getProjectedScore(a, weights));
 }
+
+// Temporary offline fallback only. Keep one record per real player name until a
+// sourced external provider replaces this legacy static dataset.
+export const NBA_PLAYERS: DBPlayer[] = [
+  ...new Map(NBA_PLAYERS_RAW.map((player) => [player.name, player])).values(),
+];

@@ -171,8 +171,8 @@ function WaiverContent() {
               <div style={{ marginTop: '1rem' }}>
                 <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 6 }}>스탯 비교</div>
                 {(['PTS','REB','AST','ST','BLK','TO','threePM'] as const).map(stat => {
-                  const pv = (result.pickup_player.stats as any)[stat] || 0;
-                  const dv = (result.drop_player.stats as any)[stat] || 0;
+                  const pv = result.pickup_player.stats[stat] || 0;
+                  const dv = result.drop_player.stats[stat] || 0;
                   const isNeg = stat === 'TO';
                   const pickupBetter = isNeg ? pv < dv : pv > dv;
                   return (

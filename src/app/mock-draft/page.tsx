@@ -13,7 +13,6 @@ const DEFAULT_WEIGHTS: ScoringWeights = { FGM:2, FGA:-1, FTM:1.5, FTA:-1, threeP
 const DEFAULT_SLOTS: RosterSlots = { PG:1, SG:1, G:1, SF:1, PF:1, F:1, C:2, UTIL:2, BN:3 };
 const ACTIVE_SLOTS = (s: RosterSlots) => s.PG + s.SG + s.G + s.SF + s.PF + s.F + s.C + s.UTIL;
 const TOTAL_SLOTS = (s: RosterSlots) => ACTIVE_SLOTS(s) + s.BN;
-const ALL_POS = ['PG','SG','G','SF','PF','F','C','UTIL'] as const;
 
 // ── CPU Draft Logic ───────────────────────────────────────────────────────────
 function cpuPick(available: DBPlayer[], roster: DBPlayer[], slots: RosterSlots, weights: ScoringWeights & Record<string,number>): DBPlayer {
@@ -185,12 +184,11 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
   const [draftLog, setDraftLog] = useState<{overall:number;teamIdx:number;player:DBPlayer}[]>([]);
   const [posFilter, setPosFilter] = useState('ALL');
   const [searchQ, setSearchQ] = useState('');
-  const [autoCpu, setAutoCpu] = useState(false);
+  const autoCpu = false;
   const [isDone, setIsDone] = useState(false);
 
   const available = NBA_PLAYERS.filter(p => !draftedIds.has(p.id));
   const myRoster = rosters[settings.myPick - 1] || [];
-  const currentTeamIdx = currentOverall <= totalPicks ? getTeamForPick(currentOverall) : -1;
   const isMyTurn = isMyPick(currentOverall) && !isDone;
 
   const myPickNumbers: number[] = [];
@@ -235,7 +233,7 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
   const myPosCounts: Record<string,number> = {};
   myRoster.forEach(p => p.positions.forEach(pos => { myPosCounts[pos] = (myPosCounts[pos]||0)+1; }));
   const posNeed = (player: DBPlayer) => player.positions.some(pos => {
-    const need = (settings.rosterSlots as any)[pos] || 0;
+    const need = settings.rosterSlots[pos as keyof RosterSlots] || 0;
     return (myPosCounts[pos]||0) < need;
   });
 
