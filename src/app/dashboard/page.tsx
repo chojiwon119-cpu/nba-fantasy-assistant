@@ -28,7 +28,23 @@ interface CompanionState {
   snapshots: YahooPageSnapshot[];
 }
 
+interface NBAProviderState {
+  provider: string;
+  configured: boolean;
+  connected: boolean | null;
+  modelVersion: string;
+  requiredTier?: string;
+  message: string;
+}
+
 const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [] };
+const EMPTY_PROVIDER: NBAProviderState = {
+  provider: 'BALLDONTLIE',
+  configured: false,
+  connected: false,
+  modelVersion: 'nba-fpts-v1.0.0',
+  message: 'NBA 데이터 공급자 상태 확인 중',
+};
 
 function relativeTime(value?: string | null): string {
   if (!value) return '동기화 기록 없음';
@@ -49,6 +65,7 @@ function freshness(value?: string | null): 'fresh' | 'aging' | 'stale' | 'empty'
 
 export default function DashboardPage() {
   const [companion, setCompanion] = useState<CompanionState>(EMPTY_STATE);
+  const [nbaProvider, setNBAProvider] = useState<NBAProviderState>(EMPTY_PROVIDER);
   const [checking, setChecking] = useState(true);
   const [, setClock] = useState(() => Date.now());
 
@@ -101,6 +118,20 @@ export default function DashboardPage() {
       window.clearInterval(clockTimer);
     };
   }, [requestSync]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/nba/status?probe=1', { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json() as NBAProviderState;
+        setNBAProvider(payload);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        setNBAProvider((current) => ({ ...current, message: 'NBA 데이터 공급자 상태 확인 실패' }));
+      });
+    return () => controller.abort();
+  }, []);
 
   const latestSync = companion.lastSyncAt
     ?? companion.snapshots.map((snapshot) => snapshot.observedAt).sort().at(-1)
@@ -179,7 +210,7 @@ export default function DashboardPage() {
           <article className="panel primary-panel">
             <div className="panel-heading">
               <div><span className="eyebrow">DECISION CENTER</span><h2>오늘의 판단</h2></div>
-              <span className="model-chip">Projection Engine v0.1</span>
+              <span className="model-chip">{nbaProvider.modelVersion}</span>
             </div>
             {observedPlayers.length === 0 ? (
               <div className="empty-decision">
@@ -191,7 +222,7 @@ export default function DashboardPage() {
             ) : (
               <div className="decision-list">
                 <div className="decision-row"><span className="decision-rank">01</span><div><strong>리그 상태 수집 완료</strong><p>{observedPlayers.length}명의 선수를 기준으로 예측 준비가 가능합니다.</p></div><span className="decision-status ready">READY</span></div>
-                <div className="decision-row"><span className="decision-rank">02</span><div><strong>외부 예측 데이터 연결 필요</strong><p>검증된 프로젝션이 들어오기 전에는 임의 추천을 생성하지 않습니다.</p></div><span className="decision-status waiting">WAITING</span></div>
+                <div className="decision-row"><span className="decision-rank">02</span><div><strong>{nbaProvider.connected ? '예측 엔진 데이터 연결 완료' : '외부 예측 데이터 연결 필요'}</strong><p>{nbaProvider.message}</p></div><span className={`decision-status ${nbaProvider.connected ? 'ready' : 'waiting'}`}>{nbaProvider.connected ? 'READY' : 'WAITING'}</span></div>
               </div>
             )}
           </article>
@@ -199,9 +230,9 @@ export default function DashboardPage() {
           <aside className="panel data-health">
             <div className="panel-heading"><div><span className="eyebrow">DATA HEALTH</span><h2>판단 신뢰도</h2></div></div>
             <div className="health-row"><span>Yahoo 로스터</span><strong className={syncFreshness}>{relativeTime(latestSync)}</strong></div>
-            <div className="health-row"><span>NBA 스탯</span><strong className="stale">공급자 미연결</strong></div>
-            <div className="health-row"><span>부상 정보</span><strong className="stale">공급자 미연결</strong></div>
-            <div className="health-row"><span>예측 모델</span><strong className="aging">계약 준비 완료</strong></div>
+            <div className="health-row"><span>NBA 스탯</span><strong className={nbaProvider.connected ? 'fresh' : 'stale'}>{nbaProvider.connected ? `${nbaProvider.provider} 연결됨` : 'API 키 대기'}</strong></div>
+            <div className="health-row"><span>부상 정보</span><strong className={nbaProvider.connected ? 'fresh' : 'stale'}>{nbaProvider.connected ? '자동 반영 준비' : `${nbaProvider.requiredTier ?? 'ALL-STAR'} 필요`}</strong></div>
+            <div className="health-row"><span>예측 모델</span><strong className="fresh">v1 구현 완료</strong></div>
             <p className="health-footnote">핵심 데이터가 오래되거나 누락되면 과거 평균으로 대체하지 않고 추천을 중단합니다.</p>
           </aside>
         </section>

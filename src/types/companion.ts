@@ -60,3 +60,32 @@ export interface PlayerProjection {
   confidence: number;
 }
 
+export interface ProjectedGame {
+  gameId: string;
+  date: string;
+  opponentTeamId: string;
+  home: boolean;
+  backToBack: boolean;
+  opponentFactor: number;
+  minutesFactor: number;
+  availabilityProbability: number;
+  expectedPoints: number;
+}
+
+export interface PlayerProjectionV1 extends PlayerProjection {
+  playerName: string;
+  teamAbbreviation: string;
+  projectedMinutes: number;
+  recentGamesUsed: number;
+  standardDeviation: number;
+  dataQuality: 'high' | 'medium' | 'low' | 'insufficient';
+  injuryStatus?: string;
+  games: ProjectedGame[];
+  warnings: string[];
+  modelFactors: {
+    minutesTrend: number;
+    recentFormWeight: number;
+    scheduleStrength: number;
+    backToBackGames: number;
+  };
+}
