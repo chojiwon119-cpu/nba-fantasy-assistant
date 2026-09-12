@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -14,26 +14,12 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { YahooPageSnapshot } from '@/types/companion';
+import { useCompanionSync } from '@/hooks/useCompanionSync';
 
-const REQUEST = 'NBA_ASSISTANT_REQUEST_SYNC';
-const RESPONSE = 'NBA_ASSISTANT_SYNC_STATE';
 const SCHEDULE_REQUEST = 'NBA_ASSISTANT_SCHEDULE_REQUEST';
 const SCHEDULE_RESPONSE = 'NBA_ASSISTANT_SCHEDULE_RESPONSE';
-const CACHE_KEY = 'nba-assistant-yahoo-snapshots';
 const SCHEDULE_TIMEOUT_MS = 12000;
 const WINDOW_DAYS = 7;
-
-type YahooPlayerDirectory = Record<string, { updatedAt: string; players: Record<string, YahooPageSnapshot['players'][number]> }>;
-
-interface CompanionState {
-  installed: boolean;
-  readOnly: boolean;
-  version?: string;
-  lastSyncAt?: string | null;
-  snapshots: YahooPageSnapshot[];
-  playerDirectories: YahooPlayerDirectory;
-}
 
 interface ScheduleGame {
   date: string;
@@ -67,8 +53,6 @@ interface CompanionProjection {
   warnings: string[];
 }
 
-const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [], playerDirectories: {} };
-
 function relativeTime(value?: string | null): string {
   if (!value) return '동기화 기록 없음';
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -91,83 +75,19 @@ function isoDate(value: Date): string {
 }
 
 export default function DashboardPage() {
-  const [companion, setCompanion] = useState<CompanionState>(EMPTY_STATE);
-  const [checking, setChecking] = useState(true);
+  const {
+    installed, version, latestSync: companionLastSync, activeLeague, leagueSnapshots,
+    players: observedPlayers, checking, requestSync,
+  } = useCompanionSync();
   const [schedule, setSchedule] = useState<SchedulePayload | null>(null);
   const [scheduleStatus, setScheduleStatus] = useState<ScheduleStatus>('idle');
   const [projections, setProjections] = useState<CompanionProjection[]>([]);
   const [projectionsLoading, setProjectionsLoading] = useState(false);
   const [projectionsError, setProjectionsError] = useState<string>();
   const [projectionWarnings, setProjectionWarnings] = useState<string[]>([]);
-  const [, setClock] = useState(() => Date.now());
 
-  const requestSync = useCallback(() => {
-    setChecking(true);
-    window.postMessage({ type: REQUEST }, window.location.origin);
-    window.setTimeout(() => setChecking(false), 900);
-  }, []);
-
-  useEffect(() => {
-    const cached = window.localStorage.getItem(CACHE_KEY);
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as { snapshots: YahooPageSnapshot[]; playerDirectories?: YahooPlayerDirectory };
-        window.setTimeout(() => {
-          setCompanion((current) => ({ ...current, snapshots: parsed.snapshots ?? [], playerDirectories: parsed.playerDirectories ?? {} }));
-        }, 0);
-      } catch {
-        window.localStorage.removeItem(CACHE_KEY);
-      }
-    }
-
-    const onMessage = (event: MessageEvent) => {
-      if (event.source !== window || event.data?.type !== RESPONSE) return;
-      const payload = event.data.payload as Partial<CompanionState>;
-      setCompanion((current) => {
-        const next = {
-          ...current,
-          ...payload,
-          installed: true,
-          readOnly: payload.readOnly ?? current.readOnly,
-          snapshots: payload.snapshots ?? current.snapshots,
-          playerDirectories: payload.playerDirectories ?? current.playerDirectories,
-        };
-        if (payload.snapshots || payload.playerDirectories) {
-          window.localStorage.setItem(CACHE_KEY, JSON.stringify({ snapshots: next.snapshots, playerDirectories: next.playerDirectories }));
-        }
-        return next;
-      });
-      setChecking(false);
-    };
-
-    window.addEventListener('message', onMessage);
-    const initialSyncTimer = window.setTimeout(requestSync, 0);
-    const syncTimer = window.setInterval(requestSync, 15000);
-    const clockTimer = window.setInterval(() => setClock(Date.now()), 30000);
-    return () => {
-      window.removeEventListener('message', onMessage);
-      window.clearTimeout(initialSyncTimer);
-      window.clearInterval(syncTimer);
-      window.clearInterval(clockTimer);
-    };
-  }, [requestSync]);
-
-  const latestSync = companion.lastSyncAt
-    ?? companion.snapshots.map((snapshot) => snapshot.observedAt).sort().at(-1)
-    ?? null;
+  const latestSync = companionLastSync;
   const syncFreshness = freshness(latestSync);
-  const activeLeague = companion.snapshots[0]?.leagueId ?? Object.keys(companion.playerDirectories)[0];
-  const leagueSnapshots = useMemo(
-    () => companion.snapshots.filter((snapshot) => !activeLeague || snapshot.leagueId === activeLeague),
-    [activeLeague, companion.snapshots],
-  );
-  // Read from the per-league player directory (accumulated one player at a time as pages are
-  // visited) rather than merging whole-page snapshots, since Yahoo's paginated list views
-  // (25 players/page) don't reliably produce a distinct snapshot per page — see yahoo-content.js.
-  const observedPlayers = useMemo(() => {
-    if (!activeLeague) return [];
-    return Object.values(companion.playerDirectories[activeLeague]?.players ?? {});
-  }, [activeLeague, companion.playerDirectories]);
   const rostered = observedPlayers.filter((player) => player.availability === 'ROSTERED').length;
   const available = observedPlayers.filter((player) => ['FREE_AGENT', 'WAIVER'].includes(player.availability)).length;
   const pageCoverage = new Set(leagueSnapshots.map((snapshot) => snapshot.pageKind));
@@ -318,9 +238,9 @@ export default function DashboardPage() {
           <div className="sync-leading">
             <span className="sync-dot" />
             <div>
-              <strong>{companion.installed ? 'Yahoo Companion 연결됨' : 'Yahoo Companion 연결 대기'}</strong>
-              <span>{companion.installed
-                ? `마지막 자동 반영 ${relativeTime(latestSync)} · 확장 v${companion.version ?? '0.1.0'}`
+              <strong>{installed ? 'Yahoo Companion 연결됨' : 'Yahoo Companion 연결 대기'}</strong>
+              <span>{installed
+                ? `마지막 자동 반영 ${relativeTime(latestSync)} · 확장 v${version ?? '0.1.0'}`
                 : '확장 프로그램 설치 후 Yahoo Fantasy 페이지를 열면 자동으로 반영됩니다.'}</span>
             </div>
           </div>
@@ -361,7 +281,7 @@ export default function DashboardPage() {
             <div className="health-row"><span>Yahoo 로스터</span><strong className={syncFreshness}>{relativeTime(latestSync)}</strong></div>
             <div className="health-row"><span>NBA 스탯</span><strong className={scorablePlayers.length > 0 ? 'fresh' : 'stale'}>{scorablePlayers.length > 0 ? 'Yahoo 시즌 평균에서 직접 읽음' : '시즌 평균 스탯 대기'}</strong></div>
             <div className="health-row"><span>일정 데이터</span><strong className={scheduleReady ? 'fresh' : 'stale'}>{scheduleReady ? '번들 일정 연결됨' : '연결 대기'}</strong></div>
-            <div className="health-row"><span>부상 정보</span><strong className={companion.installed ? 'fresh' : 'stale'}>{companion.installed ? 'Yahoo 상태 수집됨' : 'Yahoo Companion 대기'}</strong></div>
+            <div className="health-row"><span>부상 정보</span><strong className={installed ? 'fresh' : 'stale'}>{installed ? 'Yahoo 상태 수집됨' : 'Yahoo Companion 대기'}</strong></div>
             <div className="health-row"><span>데이터 비용</span><strong className="fresh">무료 · API 키 없음</strong></div>
             <p className="health-footnote">핵심 데이터가 오래되거나 누락되면 과거 평균으로 대체하지 않고 추천을 중단합니다.</p>
           </aside>

@@ -1,31 +1,53 @@
 'use client';
-import { useState, useCallback, useEffect } from 'react';
-import { NBA_PLAYERS, DBPlayer, getFantasyScore, getProjectedScore } from '@/lib/playerDb';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import { useCompanionSync } from '@/hooks/useCompanionSync';
+import { scoreStatLine, ScoringWeights as ProjectionWeights } from '@/lib/projections';
+import { parseYahooInjuryStatus } from '@/lib/nba-data/injury-status';
+import { PlayerStats } from '@/types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
-interface ScoringWeights { FGM:number; FGA:number; FTM:number; FTA:number; threePM:number; threePA:number; PTS:number; REB:number; AST:number; ST:number; BLK:number; TO:number; DD:number; TD:number; [key:string]: number; }
+type ScoringWeights = ProjectionWeights;
 interface RosterSlots { PG:number; SG:number; G:number; SF:number; PF:number; F:number; C:number; UTIL:number; BN:number; }
 interface DraftSettings { numTeams:number; myPick:number; draftType:'snake'|'linear'; rosterSlots:RosterSlots; scoringWeights:ScoringWeights; }
-interface TeamRoster { [teamIdx:number]: DBPlayer[] }
+
+// A player drafted from the Companion's live Yahoo player directory, scored with the exact
+// same scoreStatLine()/SCORING_WEIGHTS the Dashboard's projections use — never from the old
+// static, out-of-date playerDb.ts season snapshot.
+interface LivePlayer {
+  id: string;
+  name: string;
+  nbaTeam: string;
+  positions: string[];
+  stats: Omit<PlayerStats, 'GP'>;
+  gp: number;
+  mpg: number;
+  injuryStatus: string;
+  availabilityProbability: number;
+  rawStatus?: string;
+}
 
 const DEFAULT_WEIGHTS: ScoringWeights = { FGM:2, FGA:-1, FTM:1.5, FTA:-1, threePM:3, threePA:-1, PTS:1, REB:1.2, AST:1.8, ST:3, BLK:3, TO:-1, DD:3, TD:5 };
 const DEFAULT_SLOTS: RosterSlots = { PG:1, SG:1, G:1, SF:1, PF:1, F:1, C:2, UTIL:2, BN:3 };
 const ACTIVE_SLOTS = (s: RosterSlots) => s.PG + s.SG + s.G + s.SF + s.PF + s.F + s.C + s.UTIL;
 const TOTAL_SLOTS = (s: RosterSlots) => ACTIVE_SLOTS(s) + s.BN;
+const MIN_GP_FOR_RELIABLE = 5;
+
+function projectedScore(player: LivePlayer, weights: ScoringWeights): number {
+  return scoreStatLine(player.stats, weights);
+}
 
 // ── CPU Draft Logic ───────────────────────────────────────────────────────────
-function cpuPick(available: DBPlayer[], roster: DBPlayer[], slots: RosterSlots, weights: ScoringWeights & Record<string,number>): DBPlayer {
+function cpuPick(available: LivePlayer[], roster: LivePlayer[], slots: RosterSlots, weights: ScoringWeights): LivePlayer {
   const posCounts: Record<string, number> = {};
   roster.forEach(p => p.positions.forEach(pos => { posCounts[pos] = (posCounts[pos]||0)+1; }));
 
-  // 포지션 충족 안 된 포지션에서 BPA 우선
   const neededPos = (Object.keys(slots) as (keyof RosterSlots)[]).filter(pos => {
     if (pos === 'BN' || pos === 'UTIL') return false;
     return (posCounts[pos] || 0) < slots[pos];
   });
 
-  const sorted = [...available].sort((a, b) => getProjectedScore(b, weights) - getProjectedScore(a, weights));
+  const sorted = [...available].sort((a, b) => projectedScore(b, weights) - projectedScore(a, weights));
 
   if (neededPos.length > 0) {
     const needed = sorted.find(p => p.positions.some(pos => neededPos.includes(pos as keyof RosterSlots)));
@@ -35,7 +57,7 @@ function cpuPick(available: DBPlayer[], roster: DBPlayer[], slots: RosterSlots, 
 }
 
 // ── Setup Screen ─────────────────────────────────────────────────────────────
-function SetupScreen({ onStart }: { onStart: (s: DraftSettings) => void }) {
+function SetupScreen({ livePlayers, onStart }: { livePlayers: LivePlayer[]; onStart: (s: DraftSettings) => void }) {
   const [numTeams, setNumTeams] = useState(6);
   const [myPick, setMyPick] = useState(1);
   const [draftType, setDraftType] = useState<'snake'|'linear'>('snake');
@@ -44,12 +66,28 @@ function SetupScreen({ onStart }: { onStart: (s: DraftSettings) => void }) {
   const [showWeights, setShowWeights] = useState(false);
 
   const totalRounds = TOTAL_SLOTS(slots);
+  const neededPlayers = totalRounds * numTeams;
+  const notEnoughPlayers = livePlayers.length < neededPlayers;
 
   return (
     <div style={{minHeight:'100vh',padding:'2rem',maxWidth:800,margin:'0 auto'}}>
       <div style={{display:'flex',alignItems:'center',gap:'1rem',marginBottom:'2rem'}}>
-        <Link href="/" style={{color:'var(--text2)',textDecoration:'none',fontSize:13}}>← 홈</Link>
+        <Link href="/dashboard" style={{color:'var(--text2)',textDecoration:'none',fontSize:13}}>← 대시보드</Link>
         <h1 style={{fontSize:22,fontWeight:700}}>🏀 Mock Draft 설정</h1>
+      </div>
+
+      <div className="card" style={{marginBottom:'1.5rem', borderColor: notEnoughPlayers ? 'var(--yellow)' : undefined}}>
+        <h3 style={{fontWeight:600,marginBottom:'0.5rem',fontSize:14,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'0.05em'}}>선수 데이터 (Yahoo Companion)</h3>
+        <p style={{fontSize:13,color:'var(--text2)',lineHeight:1.6}}>
+          Yahoo Fantasy의 Player List(Stats: &quot;Season (avg)&quot;)에서 지금까지 확인된 선수 <strong style={{color:'var(--text)'}}>{livePlayers.length}명</strong>으로 드래프트를 구성합니다.
+          외부 사이트 없이 야후 화면에서 직접 읽은 시즌 평균 스탯으로 계산합니다.
+        </p>
+        {notEnoughPlayers && (
+          <p style={{fontSize:12,color:'var(--yellow)',marginTop:8}}>
+            이번 설정({numTeams}팀 × {totalRounds}라운드 = {neededPlayers}명)에 필요한 선수 수보다 적습니다.
+            Yahoo Fantasy Player List에서 &quot;All Players&quot; 필터로 페이지를 여러 장 넘겨서 더 많은 선수를 화면에 띄워주세요 (직접 입력은 필요 없습니다).
+          </p>
+        )}
       </div>
 
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1.5rem',marginBottom:'1.5rem'}}>
@@ -152,6 +190,7 @@ function SetupScreen({ onStart }: { onStart: (s: DraftSettings) => void }) {
       </div>
 
       <button className="btn btn-primary" style={{width:'100%',padding:'14px',fontSize:16,justifyContent:'center'}}
+        disabled={livePlayers.length === 0}
         onClick={()=>onStart({numTeams,myPick,draftType,rosterSlots:slots,scoringWeights:weights})}>
         🏀 드래프트 시작
       </button>
@@ -160,11 +199,10 @@ function SetupScreen({ onStart }: { onStart: (s: DraftSettings) => void }) {
 }
 
 // ── Draft Room ────────────────────────────────────────────────────────────────
-function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()=>void }) {
+function DraftRoom({ livePlayers, settings, onReset }: { livePlayers: LivePlayer[]; settings: DraftSettings; onReset: ()=>void }) {
   const totalRounds = TOTAL_SLOTS(settings.rosterSlots);
   const totalPicks = totalRounds * settings.numTeams;
 
-  // 픽 순서 계산
   const getTeamForPick = useCallback((overall: number) => {
     const round = Math.floor((overall - 1) / settings.numTeams);
     const pickInRound = (overall - 1) % settings.numTeams;
@@ -179,15 +217,14 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
   }, [getTeamForPick, settings.myPick]);
 
   const [currentOverall, setCurrentOverall] = useState(1);
-  const [rosters, setRosters] = useState<TeamRoster>({});
+  const [rosters, setRosters] = useState<Record<number, LivePlayer[]>>({});
   const [draftedIds, setDraftedIds] = useState<Set<string>>(new Set());
-  const [draftLog, setDraftLog] = useState<{overall:number;teamIdx:number;player:DBPlayer}[]>([]);
+  const [draftLog, setDraftLog] = useState<{overall:number;teamIdx:number;player:LivePlayer}[]>([]);
   const [posFilter, setPosFilter] = useState('ALL');
   const [searchQ, setSearchQ] = useState('');
-  const autoCpu = false;
   const [isDone, setIsDone] = useState(false);
 
-  const available = NBA_PLAYERS.filter(p => !draftedIds.has(p.id));
+  const available = livePlayers.filter(p => !draftedIds.has(p.id));
   const myRoster = rosters[settings.myPick - 1] || [];
   const isMyTurn = isMyPick(currentOverall) && !isDone;
 
@@ -198,7 +235,7 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
   const nextMyPick = myPickNumbers.find(n => n >= currentOverall) || -1;
   const picksUntil = nextMyPick > currentOverall ? nextMyPick - currentOverall : 0;
 
-  const doPick = useCallback((player: DBPlayer, teamIdx: number) => {
+  const doPick = useCallback((player: LivePlayer, teamIdx: number) => {
     setRosters(prev => ({ ...prev, [teamIdx]: [...(prev[teamIdx]||[]), player] }));
     setDraftedIds(prev => new Set([...prev, player.id]));
     setDraftLog(prev => [...prev, { overall: currentOverall, teamIdx, player }]);
@@ -210,29 +247,25 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
   // CPU auto-pick
   useEffect(() => {
     if (isDone || isMyTurn) return;
-    if (!autoCpu && !isMyTurn) {
-      // auto CPU picks when not my turn
-      const teamIdx = getTeamForPick(currentOverall);
-      const teamRoster = rosters[teamIdx] || [];
-      if (available.length === 0) return;
-      const timer = setTimeout(() => {
-        const pick = cpuPick(available, teamRoster, settings.rosterSlots, settings.scoringWeights as ScoringWeights & Record<string,number>);
-        doPick(pick, teamIdx);
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [currentOverall, isMyTurn, isDone, available, rosters, settings, getTeamForPick, doPick, autoCpu]);
+    const teamIdx = getTeamForPick(currentOverall);
+    const teamRoster = rosters[teamIdx] || [];
+    if (available.length === 0) return;
+    const timer = setTimeout(() => {
+      const pick = cpuPick(available, teamRoster, settings.rosterSlots, settings.scoringWeights);
+      doPick(pick, teamIdx);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [currentOverall, isMyTurn, isDone, available, rosters, settings, getTeamForPick, doPick]);
 
   const filtered = available.filter(p => {
     const matchPos = posFilter === 'ALL' || p.positions.includes(posFilter);
     const matchQ = !searchQ || p.name.toLowerCase().includes(searchQ.toLowerCase()) || p.nbaTeam.toLowerCase().includes(searchQ.toLowerCase());
     return matchPos && matchQ;
-  }).sort((a,b) => getProjectedScore(b, settings.scoringWeights as ScoringWeights & Record<string,number>) - getProjectedScore(a, settings.scoringWeights as ScoringWeights & Record<string,number>));
+  }).sort((a,b) => projectedScore(b, settings.scoringWeights) - projectedScore(a, settings.scoringWeights));
 
-  // position balance
   const myPosCounts: Record<string,number> = {};
   myRoster.forEach(p => p.positions.forEach(pos => { myPosCounts[pos] = (myPosCounts[pos]||0)+1; }));
-  const posNeed = (player: DBPlayer) => player.positions.some(pos => {
+  const posNeed = (player: LivePlayer) => player.positions.some(pos => {
     const need = settings.rosterSlots[pos as keyof RosterSlots] || 0;
     return (myPosCounts[pos]||0) < need;
   });
@@ -292,21 +325,22 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
                   <th style={{width:32,textAlign:'center'}}>#</th>
                   <th>선수</th>
                   <th>포지션</th>
-                  <th style={{textAlign:'right'}}>지난시즌 Pt</th>
-                  <th style={{textAlign:'right'}}>프로젝션 Pt</th>
+                  <th style={{textAlign:'right'}}>예상 Pt</th>
                   <th style={{textAlign:'right'}}>PTS</th>
                   <th style={{textAlign:'right'}}>REB</th>
                   <th style={{textAlign:'right'}}>AST</th>
+                  <th style={{textAlign:'right'}}>GP</th>
                   <th style={{textAlign:'right',width:90}}></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.slice(0,60).map((player,i)=>{
-                  const actualScore = getFantasyScore(player.stats);
-                  const projScore = getProjectedScore(player, settings.scoringWeights as ScoringWeights & Record<string,number>);
+                  const projScore = projectedScore(player, settings.scoringWeights);
                   const needs = posNeed(player);
+                  const lowSample = player.gp < MIN_GP_FOR_RELIABLE;
+                  const rowOpacity = player.injuryStatus === 'OUT' ? 0.4 : ['DOUBTFUL','QUESTIONABLE'].includes(player.injuryStatus) ? 0.75 : 1;
                   return (
-                    <tr key={player.id} style={{opacity:player.status==='out'?0.4:player.status==='injured'?0.7:1}}>
+                    <tr key={player.id} style={{opacity:rowOpacity}}>
                       <td style={{textAlign:'center',color:'var(--text3)',fontSize:11}}>{i+1}</td>
                       <td>
                         <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -314,20 +348,21 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
                             <div style={{fontWeight:500,display:'flex',alignItems:'center',gap:5}}>
                               {player.name}
                               {needs && isMyTurn && <span style={{fontSize:9,color:'var(--accent)',background:'rgba(249,115,22,0.1)',padding:'1px 4px',borderRadius:3}}>필요</span>}
+                              {lowSample && <span style={{fontSize:9,color:'var(--yellow)',background:'rgba(234,179,8,0.1)',padding:'1px 4px',borderRadius:3}}>표본부족</span>}
                             </div>
                             <div style={{fontSize:11,color:'var(--text2)'}}>
-                              {player.nbaTeam} · {player.age}세
-                              {player.status!=='active'&&<span style={{marginLeft:4,color:player.status==='injured'?'var(--yellow)':'var(--red)'}}>({player.injuryNote||player.status})</span>}
+                              {player.nbaTeam}
+                              {player.injuryStatus !== 'ACTIVE' && player.injuryStatus !== 'UNKNOWN' && <span style={{marginLeft:4,color:player.injuryStatus==='OUT'?'var(--red)':'var(--yellow)'}}>({player.injuryStatus})</span>}
                             </div>
                           </div>
                         </div>
                       </td>
                       <td>{player.positions.map(p=><span key={p} className="pos-badge" style={{marginRight:2}}>{p}</span>)}</td>
-                      <td style={{textAlign:'right',color:'var(--text2)',fontSize:12}}>{actualScore.toFixed(1)}</td>
                       <td style={{textAlign:'right',fontWeight:700,color:'var(--accent)'}}>{projScore.toFixed(1)}</td>
                       <td style={{textAlign:'right',fontSize:12,color:'var(--text2)'}}>{player.stats.PTS.toFixed(1)}</td>
                       <td style={{textAlign:'right',fontSize:12,color:'var(--text2)'}}>{player.stats.REB.toFixed(1)}</td>
                       <td style={{textAlign:'right',fontSize:12,color:'var(--text2)'}}>{player.stats.AST.toFixed(1)}</td>
+                      <td style={{textAlign:'right',fontSize:12,color:'var(--text3)'}}>{player.gp}</td>
                       <td>
                         {isMyTurn && !isDone ? (
                           <button className="btn btn-primary" style={{padding:'4px 12px',fontSize:11,width:'100%'}}
@@ -356,7 +391,7 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
             ) : (
               <div style={{display:'flex',flexDirection:'column',gap:5}}>
                 {myRoster.map((p,i)=>{
-                  const proj = getProjectedScore(p, settings.scoringWeights as ScoringWeights & Record<string,number>);
+                  const proj = projectedScore(p, settings.scoringWeights);
                   return (
                     <div key={p.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 8px',background:'var(--bg3)',borderRadius:6}}>
                       <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -378,7 +413,7 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
             {myRoster.length > 0 && (
               <div style={{marginTop:'0.75rem',paddingTop:'0.75rem',borderTop:'1px solid var(--border)',display:'flex',justifyContent:'space-between',fontSize:12}}>
                 <span style={{color:'var(--text2)'}}>팀 총 프로젝션</span>
-                <strong style={{color:'var(--accent)'}}>{myRoster.reduce((s,p)=>s+getProjectedScore(p,settings.scoringWeights as ScoringWeights & Record<string,number>),0).toFixed(1)} pt/g</strong>
+                <strong style={{color:'var(--accent)'}}>{myRoster.reduce((s,p)=>s+projectedScore(p,settings.scoringWeights),0).toFixed(1)} pt/g</strong>
               </div>
             )}
 
@@ -443,12 +478,12 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
                 <div style={{fontSize:11,color:'var(--text3)',marginBottom:3}}>{i+1}라운드</div>
                 <div style={{fontWeight:600,fontSize:13}}>{p.name}</div>
                 <div style={{fontSize:11,color:'var(--text2)'}}>{p.positions.join('/')} · {p.nbaTeam}</div>
-                <div style={{marginTop:4,fontWeight:700,color:'var(--accent)'}}>{getProjectedScore(p, settings.scoringWeights as ScoringWeights & Record<string,number>).toFixed(1)} proj pt</div>
+                <div style={{marginTop:4,fontWeight:700,color:'var(--accent)'}}>{projectedScore(p, settings.scoringWeights).toFixed(1)} proj pt</div>
               </div>
             ))}
           </div>
           <div style={{marginTop:'1rem',display:'flex',gap:'2rem',paddingTop:'1rem',borderTop:'1px solid var(--border)'}}>
-            <div><div style={{fontSize:12,color:'var(--text2)'}}>팀 총 프로젝션 (per game)</div><div style={{fontSize:24,fontWeight:700,color:'var(--accent)'}}>{myRoster.reduce((s,p)=>s+getProjectedScore(p,settings.scoringWeights as ScoringWeights & Record<string,number>),0).toFixed(1)} pt</div></div>
+            <div><div style={{fontSize:12,color:'var(--text2)'}}>팀 총 프로젝션 (per game)</div><div style={{fontSize:24,fontWeight:700,color:'var(--accent)'}}>{myRoster.reduce((s,p)=>s+projectedScore(p,settings.scoringWeights),0).toFixed(1)} pt</div></div>
             <div style={{marginLeft:'auto',display:'flex',gap:'0.75rem'}}>
               <button className="btn btn-secondary" onClick={onReset}>새로 시작</button>
             </div>
@@ -461,7 +496,48 @@ function DraftRoom({ settings, onReset }: { settings: DraftSettings; onReset: ()
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 export default function MockDraftPage() {
+  const { players: observedPlayers, installed } = useCompanionSync();
   const [settings, setSettings] = useState<DraftSettings|null>(null);
-  if (!settings) return <SetupScreen onStart={setSettings} />;
-  return <DraftRoom settings={settings} onReset={()=>setSettings(null)} />;
+
+  const livePlayers = useMemo<LivePlayer[]>(() => {
+    return observedPlayers
+      .filter((player) => player.seasonAverage && player.nbaTeam)
+      .map((player) => {
+        const sa = player.seasonAverage!;
+        const injury = parseYahooInjuryStatus(player.rawStatus);
+        return {
+          id: player.yahooPlayerId,
+          name: player.name,
+          nbaTeam: player.nbaTeam!,
+          positions: player.eligiblePositions.length ? player.eligiblePositions : (player.rosterSlot ? [player.rosterSlot] : []),
+          stats: {
+            FGA: sa.FGA, FGM: sa.FGM, FTA: sa.FTA, FTM: sa.FTM,
+            threePA: sa.threePA, threePM: sa.threePM,
+            PTS: sa.PTS, REB: sa.REB, AST: sa.AST, ST: sa.ST, BLK: sa.BLK, TO: sa.TO, DD: sa.DD, TD: sa.TD,
+          },
+          gp: sa.GP,
+          mpg: sa.MPG,
+          injuryStatus: injury.status,
+          availabilityProbability: injury.availabilityProbability,
+          rawStatus: player.rawStatus,
+        };
+      });
+  }, [observedPlayers]);
+
+  if (!installed || livePlayers.length === 0) {
+    return (
+      <div style={{minHeight:'100vh',padding:'2rem',maxWidth:700,margin:'0 auto',textAlign:'center'}}>
+        <h1 style={{fontSize:20,fontWeight:700,marginBottom:'0.75rem'}}>🏀 Mock Draft</h1>
+        <p style={{color:'var(--text2)',fontSize:14,lineHeight:1.7}}>
+          아직 Yahoo Companion에서 읽은 선수 시즌 스탯이 없습니다.<br/>
+          Yahoo Fantasy Basketball의 Player List 화면(Stats: &quot;Season (avg)&quot;)을 열어 몇 페이지 넘겨보시면
+          자동으로 채워집니다. 직접 입력할 내용은 없습니다.
+        </p>
+        <Link href="/dashboard" style={{display:'inline-block',marginTop:'1.25rem',color:'var(--accent)',fontSize:13}}>← 대시보드로 돌아가기</Link>
+      </div>
+    );
+  }
+
+  if (!settings) return <SetupScreen livePlayers={livePlayers} onStart={setSettings} />;
+  return <DraftRoom livePlayers={livePlayers} settings={settings} onReset={()=>setSettings(null)} />;
 }
