@@ -45,6 +45,56 @@
     return href || anchor.textContent.trim();
   }
 
+  // Yahoo's own Player List already shows season-average per-game stats (MPG, FGM/FGA,
+  // FTM/FTA, 3PTA/3PTM, PTS/REB/AST/ST/BLK/TO/DD/TD) in a data table. Reading those directly
+  // means the projection model doesn't need any external stats source at all — external NBA
+  // data providers (NBA.com, ESPN) are blocked from both Vercel and, it turns out, this
+  // extension's own fetches, so this sidesteps that dead end entirely.
+  const STAT_LABEL_MAP = {
+    'gp*': 'GP', gp: 'GP',
+    mpg: 'MPG',
+    fgm: 'FGM', fga: 'FGA',
+    ftm: 'FTM', fta: 'FTA',
+    '3pta': 'threePA', '3ptm': 'threePM',
+    pts: 'PTS', reb: 'REB', ast: 'AST', st: 'ST', blk: 'BLK', to: 'TO', dd: 'DD', td: 'TD',
+  };
+  const headerLabelsByTable = new Map();
+
+  function headerLabelsFor(table) {
+    if (!table) return [];
+    if (headerLabelsByTable.has(table)) return headerLabelsByTable.get(table);
+    const headerRows = [...table.querySelectorAll('thead tr')];
+    const lastRow = headerRows[headerRows.length - 1];
+    const labels = lastRow
+      ? [...lastRow.children].map((cell) => cell.textContent.replace(/\s+/g, ' ').trim().toLowerCase())
+      : [];
+    headerLabelsByTable.set(table, labels);
+    return labels;
+  }
+
+  function extractSeasonAverage(row) {
+    if (!row || row.tagName !== 'TR') return undefined;
+    const table = row.closest('table');
+    const labels = headerLabelsFor(table);
+    const cells = [...row.children];
+    if (labels.length === 0 || labels.length !== cells.length) return undefined;
+
+    const stats = {};
+    labels.forEach((label, index) => {
+      const key = STAT_LABEL_MAP[label];
+      if (!key) return;
+      const raw = cells[index]?.textContent?.trim();
+      if (!raw || raw === '—' || raw === '-') return;
+      const value = Number(raw.replace('%', ''));
+      if (Number.isFinite(value)) stats[key] = value;
+    });
+    // Require at least GP plus a couple of real stat columns before trusting this row as a
+    // season-average line, so a table that merely happens to have the same column count
+    // (e.g. no stats columns matched at all) doesn't produce a bogus all-zero stat line.
+    if (stats.GP === undefined || Object.keys(stats).length < 4) return undefined;
+    return stats;
+  }
+
   function extractPlayers() {
     const anchors = [...document.querySelectorAll('a[href]')]
       .filter((anchor) => PLAYER_LINK_PATTERNS.some((pattern) => anchor.href.includes(pattern)));
@@ -69,9 +119,11 @@
         fantasyTeamId: fantasyTeamId(),
         availability: availabilityFrom(rowText),
         rawStatus: rowText.slice(0, 300),
+        seasonAverage: extractSeasonAverage(row),
       });
     }
 
+    headerLabelsByTable.clear();
     return [...players.values()];
   }
 

@@ -14,6 +14,18 @@ export type YahooAvailability =
   | 'UNAVAILABLE'
   | 'UNKNOWN';
 
+// The subset of Yahoo's own season-average columns (Player List "2025-26 Season (avg)" view)
+// that map onto PlayerStats (minus GP, tracked separately). Read directly from Yahoo's table
+// since NBA.com and ESPN are both unreachable from Vercel and from this extension's fetches.
+export interface YahooSeasonAverage {
+  GP: number;
+  MPG: number;
+  FGM: number; FGA: number;
+  FTM: number; FTA: number;
+  threePA: number; threePM: number;
+  PTS: number; REB: number; AST: number; ST: number; BLK: number; TO: number; DD: number; TD: number;
+}
+
 export interface YahooObservedPlayer {
   yahooPlayerId: string;
   name: string;
@@ -23,6 +35,7 @@ export interface YahooObservedPlayer {
   fantasyTeamId?: string;
   availability: YahooAvailability;
   rawStatus?: string;
+  seasonAverage?: YahooSeasonAverage;
 }
 
 export interface YahooPageSnapshot {

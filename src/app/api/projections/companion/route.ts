@@ -1,62 +1,68 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PlayerStats } from '@/types';
-import { ProjectionHorizon } from '@/types/companion';
-import {
-  DateRange,
-  NBADataProvider,
-  NBAGame,
-  NBAInjury,
-  NBAPlayerGameStat,
-  NBAPlayerIdentity,
-  ProviderUsage,
-} from '@/lib/nba-data/types';
+import { PlayerStats, SCORING_WEIGHTS } from '@/types';
+import { scoreStatLine } from '@/lib/projections';
 import { parseYahooInjuryStatus } from '@/lib/nba-data/injury-status';
-import { runProjectionModel } from '@/lib/projection-model';
 
-const HORIZONS = new Set<ProjectionHorizon>([
-  'next_game', 'next_7_days', 'next_14_days', 'rest_of_season', 'fantasy_playoffs',
-]);
-const MAX_PLAYERS = 25;
-const MAX_GAMES = 600;
-const MAX_STATS_PER_PLAYER = 40;
-const GAME_STATUSES = new Set(['scheduled', 'in_progress', 'final', 'postponed', 'canceled', 'unknown']);
+// NBA.com and ESPN are both unreachable (403/blocked) from Vercel and from the Chrome
+// Companion's own fetches alike, so this route does not call out to any external NBA data
+// source. It only scores the season-average stat line Yahoo's own Player List already shows
+// (read client-side by yahoo-content.js) against however many games the player's team has in
+// the requested window (looked up from the extension's bundled schedule — see
+// scripts/build-schedule.cjs). No per-game history means no measured game-to-game variance,
+// so the P10/P90 spread here is a documented heuristic (ROUGH_GAME_SD_RATIO), not something
+// derived from real data — it is reported as such via dataQuality/warnings, never hidden.
+
+const MAX_PLAYERS = 60;
+const MODEL_VERSION = 'nba-fpts-v1.1.0-season-avg';
+const ROUGH_GAME_SD_RATIO = 0.32;
+const P10_Z = 1.28155;
 const STAT_KEYS: Array<keyof Omit<PlayerStats, 'GP'>> = [
   'FGA', 'FGM', 'FTA', 'FTM', 'threePA', 'threePM', 'PTS', 'REB', 'AST', 'ST', 'BLK', 'TO', 'DD', 'TD',
 ];
+const STAT_CAPS: Record<keyof Omit<PlayerStats, 'GP'>, number> = {
+  FGA: 45, FGM: 30, FTA: 30, FTM: 30, threePA: 20, threePM: 15,
+  PTS: 70, REB: 30, AST: 25, ST: 10, BLK: 10, TO: 15, DD: 3, TD: 3,
+};
 
+interface RawSeasonAverage {
+  GP?: unknown; MPG?: unknown;
+  FGA?: unknown; FGM?: unknown; FTA?: unknown; FTM?: unknown;
+  threePA?: unknown; threePM?: unknown;
+  PTS?: unknown; REB?: unknown; AST?: unknown; ST?: unknown; BLK?: unknown; TO?: unknown; DD?: unknown; TD?: unknown;
+}
 interface RawPlayer {
-  id?: unknown;
+  yahooPlayerId?: unknown;
   name?: unknown;
-  teamId?: unknown;
-  teamAbbreviation?: unknown;
-  positions?: unknown;
+  team?: unknown;
   rawStatus?: unknown;
-}
-interface RawGame {
-  id?: unknown;
-  date?: unknown;
-  datetime?: unknown;
-  status?: unknown;
-  homeTeamId?: unknown;
-  visitorTeamId?: unknown;
-  homeTeamScore?: unknown;
-  visitorTeamScore?: unknown;
-}
-interface RawGameStat {
-  playerId?: unknown;
-  teamId?: unknown;
-  teamAbbreviation?: unknown;
-  gameId?: unknown;
-  date?: unknown;
-  minutes?: unknown;
-  stats?: Record<string, unknown>;
+  gamesInWindow?: unknown;
+  seasonAverage?: RawSeasonAverage;
 }
 interface RequestBody {
   players?: RawPlayer[];
-  games?: RawGame[];
-  gameStats?: RawGameStat[];
-  horizon?: unknown;
-  as_of?: unknown;
+  scheduleCoverage?: { start?: unknown; end?: unknown } | null;
+  windowStart?: unknown;
+  windowEnd?: unknown;
+}
+
+interface CompanionProjection {
+  playerId: string;
+  playerName: string;
+  team: string;
+  modelVersion: string;
+  generatedAt: string;
+  gamesInWindow: number;
+  gamesPlayedThisSeason: number;
+  availabilityProbability: number;
+  pointsPerActiveGame: number;
+  expectedTotalPoints: number;
+  p10: number;
+  p50: number;
+  p90: number;
+  confidence: number;
+  dataQuality: 'high' | 'medium' | 'low' | 'insufficient';
+  injuryStatus: string;
+  warnings: string[];
 }
 
 function str(value: unknown, max: number): string {
@@ -69,131 +75,34 @@ function finiteNonNegative(value: unknown, max: number): number {
   return Math.min(parsed, max);
 }
 
-function sanitizePlayers(raw: unknown): NBAPlayerIdentity[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, MAX_PLAYERS)
-    .map((entry): NBAPlayerIdentity & { rawStatus?: string } | null => {
-      const player = entry as RawPlayer;
-      const id = str(player.id, 50);
-      const name = str(player.name, 100);
-      if (!id || !name) return null;
-      return {
-        id,
-        name,
-        teamId: str(player.teamId, 20),
-        teamAbbreviation: str(player.teamAbbreviation, 10),
-        positions: Array.isArray(player.positions) ? player.positions.slice(0, 10).map((p) => str(p, 10)).filter(Boolean) : [],
-        rawStatus: player.rawStatus !== undefined ? str(player.rawStatus, 300) : undefined,
-      };
-    })
-    .filter((player): player is NBAPlayerIdentity & { rawStatus?: string } => player !== null);
+function sanitizeSeasonAverage(raw: RawSeasonAverage | undefined): { stats: Omit<PlayerStats, 'GP'>; gp: number; mpg: number } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const gp = finiteNonNegative(raw.GP, 100);
+  if (gp <= 0) return null;
+  const mpg = finiteNonNegative(raw.MPG, 48);
+  const stats = Object.fromEntries(
+    STAT_KEYS.map((key) => [key, finiteNonNegative(raw[key], STAT_CAPS[key])]),
+  ) as Omit<PlayerStats, 'GP'>;
+  return { stats, gp, mpg };
 }
 
-function sanitizeGames(raw: unknown): NBAGame[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.slice(0, MAX_GAMES)
-    .map((entry): NBAGame | null => {
-      const game = entry as RawGame;
-      const id = str(game.id, 50);
-      const date = str(game.date, 10);
-      if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-      const status = typeof game.status === 'string' && GAME_STATUSES.has(game.status) ? game.status as NBAGame['status'] : 'unknown';
-      return {
-        id,
-        date,
-        datetime: str(game.datetime, 40) || `${date}T00:00:00Z`,
-        status,
-        homeTeamId: str(game.homeTeamId, 20),
-        visitorTeamId: str(game.visitorTeamId, 20),
-        homeTeamScore: finiteNonNegative(game.homeTeamScore, 250),
-        visitorTeamScore: finiteNonNegative(game.visitorTeamScore, 250),
-      };
-    })
-    .filter((game): game is NBAGame => game !== null);
+function dataQuality(gp: number, gamesInWindow: number): CompanionProjection['dataQuality'] {
+  if (gp < 3) return 'insufficient';
+  if (gp >= 15 && gamesInWindow > 0) return 'high';
+  if (gp >= 7 && gamesInWindow > 0) return 'medium';
+  return 'low';
 }
 
-function sanitizeGameStats(raw: unknown, validPlayerIds: Set<string>): NBAPlayerGameStat[] {
-  if (!Array.isArray(raw)) return [];
-  const perPlayerCount = new Map<string, number>();
-  return raw
-    .map((entry): NBAPlayerGameStat | null => {
-      const stat = entry as RawGameStat;
-      const playerId = str(stat.playerId, 50);
-      const gameId = str(stat.gameId, 50);
-      const date = str(stat.date, 10);
-      if (!playerId || !validPlayerIds.has(playerId) || !gameId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-      const used = perPlayerCount.get(playerId) ?? 0;
-      if (used >= MAX_STATS_PER_PLAYER) return null;
-      perPlayerCount.set(playerId, used + 1);
-
-      const rawStats = stat.stats ?? {};
-      const stats = Object.fromEntries(
-        STAT_KEYS.map((key) => [key, finiteNonNegative(rawStats[key], 200)]),
-      ) as Omit<PlayerStats, 'GP'>;
-
-      return {
-        playerId,
-        teamId: str(stat.teamId, 20),
-        teamAbbreviation: str(stat.teamAbbreviation, 10),
-        gameId,
-        date,
-        minutes: finiteNonNegative(stat.minutes, 60),
-        stats,
-      };
-    })
-    .filter((stat): stat is NBAPlayerGameStat => stat !== null);
+function confidenceScore(gp: number, gamesInWindow: number, hasStatus: boolean): number {
+  const sampleScore = Math.min(1, gp / 20) * 0.6;
+  const scheduleScore = gamesInWindow > 0 ? 0.25 : 0.05;
+  const statusScore = hasStatus ? 0.15 : 0.05;
+  return round(Math.min(1, sampleScore + scheduleScore + statusScore), 3);
 }
 
-class CompanionRelayProvider implements NBADataProvider {
-  readonly id = 'yahoo-companion-relay';
-  readonly displayName = 'Yahoo Companion Relay';
-  readonly configured = true;
-
-  constructor(
-    private readonly players: Array<NBAPlayerIdentity & { rawStatus?: string }>,
-    private readonly games: NBAGame[],
-    private readonly gameStats: NBAPlayerGameStat[],
-  ) {}
-
-  async searchPlayers(query: string): Promise<NBAPlayerIdentity[]> {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return [];
-    return this.players.filter((player) => player.name.toLowerCase().includes(needle));
-  }
-
-  async getPlayersByIds(playerIds: string[]): Promise<NBAPlayerIdentity[]> {
-    const wanted = new Set(playerIds);
-    return this.players.filter((player) => wanted.has(player.id));
-  }
-
-  async getGames(range: DateRange): Promise<NBAGame[]> {
-    return this.games.filter((game) => game.date >= range.startDate && game.date <= range.endDate);
-  }
-
-  async getPlayerGameStats(playerIds: string[], range: DateRange): Promise<NBAPlayerGameStat[]> {
-    const wanted = new Set(playerIds);
-    return this.gameStats.filter((stat) => wanted.has(stat.playerId) && stat.date >= range.startDate && stat.date <= range.endDate);
-  }
-
-  async getPlayerInjuries(playerIds: string[]): Promise<NBAInjury[]> {
-    const wanted = new Set(playerIds);
-    return this.players
-      .filter((player) => wanted.has(player.id))
-      .map((player): NBAInjury => {
-        const parsed = parseYahooInjuryStatus(player.rawStatus);
-        return {
-          playerId: player.id,
-          status: parsed.status,
-          description: parsed.note ?? 'Yahoo Companion 관측 상태',
-        };
-      });
-  }
-
-  async probe(): Promise<void> {}
-
-  getUsage(): ProviderUsage | null {
-    return null;
-  }
+function round(value: number, digits = 2): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 export async function POST(request: NextRequest) {
@@ -204,40 +113,95 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: '올바른 JSON 요청이 필요합니다.' }, { status: 400 });
   }
 
-  const horizon = typeof body.horizon === 'string' ? body.horizon : 'next_7_days';
-  if (!HORIZONS.has(horizon as ProjectionHorizon)) {
-    return NextResponse.json({ error: '지원하지 않는 horizon입니다.' }, { status: 400 });
+  const rawPlayers = Array.isArray(body.players) ? body.players.slice(0, MAX_PLAYERS) : [];
+  if (rawPlayers.length === 0) {
+    return NextResponse.json({ error: '선수 데이터가 필요합니다.' }, { status: 400 });
   }
 
-  let asOf: Date | undefined;
-  if (body.as_of !== undefined) {
-    if (typeof body.as_of !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.as_of)) {
-      return NextResponse.json({ error: 'as_of는 YYYY-MM-DD 형식이어야 합니다.' }, { status: 400 });
+  const scheduleCoverage = body.scheduleCoverage && typeof body.scheduleCoverage.start === 'string' && typeof body.scheduleCoverage.end === 'string'
+    ? { start: body.scheduleCoverage.start, end: body.scheduleCoverage.end }
+    : null;
+  const windowStart = typeof body.windowStart === 'string' ? body.windowStart : undefined;
+  const windowEnd = typeof body.windowEnd === 'string' ? body.windowEnd : undefined;
+
+  const warnings: string[] = [];
+  if (scheduleCoverage && windowStart && windowEnd && (windowEnd < scheduleCoverage.start || windowStart > scheduleCoverage.end)) {
+    warnings.push(`요청한 기간(${windowStart}~${windowEnd})은 번들된 일정 데이터 범위(${scheduleCoverage.start}~${scheduleCoverage.end}) 밖입니다. 비시즌이거나 일정 파일을 다시 받아야 할 수 있습니다. 경기 수는 0으로 처리했습니다.`);
+  }
+
+  const generatedAt = new Date().toISOString();
+  const projections: CompanionProjection[] = [];
+
+  for (const raw of rawPlayers) {
+    const yahooPlayerId = str(raw.yahooPlayerId, 100);
+    const name = str(raw.name, 100);
+    if (!yahooPlayerId || !name) continue;
+
+    const seasonAverage = sanitizeSeasonAverage(raw.seasonAverage);
+    const gamesInWindow = Math.round(finiteNonNegative(raw.gamesInWindow, 20));
+    const parsedStatus = parseYahooInjuryStatus(str(raw.rawStatus, 300));
+    const playerWarnings: string[] = [];
+
+    if (!seasonAverage) {
+      projections.push({
+        playerId: yahooPlayerId,
+        playerName: name,
+        team: str(raw.team, 10),
+        modelVersion: MODEL_VERSION,
+        generatedAt,
+        gamesInWindow,
+        gamesPlayedThisSeason: 0,
+        availabilityProbability: parsedStatus.availabilityProbability,
+        pointsPerActiveGame: 0,
+        expectedTotalPoints: 0,
+        p10: 0, p50: 0, p90: 0,
+        confidence: 0,
+        dataQuality: 'insufficient',
+        injuryStatus: parsedStatus.status,
+        warnings: ['이 선수의 시즌 평균 스탯을 야후 화면에서 읽지 못해 예측을 계산하지 않았습니다.'],
+      });
+      continue;
     }
-    asOf = new Date(`${body.as_of}T00:00:00Z`);
-  }
 
-  const players = sanitizePlayers(body.players);
-  if (players.length === 0) {
-    return NextResponse.json({ error: '유효한 선수 데이터(id, name)가 필요합니다.' }, { status: 400 });
-  }
-  const validPlayerIds = new Set(players.map((player) => player.id));
-  const games = sanitizeGames(body.games);
-  const gameStats = sanitizeGameStats(body.gameStats, validPlayerIds);
+    if (parsedStatus.note) playerWarnings.push('Yahoo 상태 텍스트를 인식하지 못해 보수적인 기본 출전확률을 사용했습니다.');
+    if (gamesInWindow === 0) playerWarnings.push('선택한 기간에 예정된 경기가 없습니다 (비시즌이거나 이번 주 휴식일 수 있습니다).');
 
-  const provider = new CompanionRelayProvider(players, games, gameStats);
+    const pointsPerActiveGame = round(scoreStatLine(seasonAverage.stats, SCORING_WEIGHTS));
+    const expectedTotalPoints = round(Math.max(0, pointsPerActiveGame * gamesInWindow * parsedStatus.availabilityProbability));
+    const perGameSD = Math.abs(pointsPerActiveGame) * ROUGH_GAME_SD_RATIO;
+    const availability = parsedStatus.availabilityProbability;
+    const variance = gamesInWindow > 0
+      ? gamesInWindow * availability * perGameSD ** 2 + gamesInWindow * availability * (1 - availability) * pointsPerActiveGame ** 2
+      : 0;
+    const totalSD = Math.sqrt(Math.max(0, variance));
 
-  try {
-    const result = await runProjectionModel(provider, {
-      playerIds: [...validPlayerIds],
-      horizon: horizon as ProjectionHorizon,
-      asOf,
+    projections.push({
+      playerId: yahooPlayerId,
+      playerName: name,
+      team: str(raw.team, 10),
+      modelVersion: MODEL_VERSION,
+      generatedAt,
+      gamesInWindow,
+      gamesPlayedThisSeason: seasonAverage.gp,
+      availabilityProbability: availability,
+      pointsPerActiveGame,
+      expectedTotalPoints,
+      p10: round(Math.max(0, expectedTotalPoints - P10_Z * totalSD)),
+      p50: expectedTotalPoints,
+      p90: round(expectedTotalPoints + P10_Z * totalSD),
+      confidence: confidenceScore(seasonAverage.gp, gamesInWindow, Boolean(raw.rawStatus)),
+      dataQuality: dataQuality(seasonAverage.gp, gamesInWindow),
+      injuryStatus: parsedStatus.status,
+      warnings: playerWarnings,
     });
-    return NextResponse.json(result, {
-      headers: { 'Cache-Control': 'private, no-store' },
-    });
-  } catch (error) {
-    console.error(error);
-    return NextResponse.json({ error: 'Companion 데이터로 예측 점수를 생성하지 못했습니다.' }, { status: 500 });
   }
+
+  return NextResponse.json({
+    provider: 'yahoo-season-average',
+    modelVersion: MODEL_VERSION,
+    generatedAt,
+    scheduleCoverage,
+    projections,
+    warnings,
+  }, { headers: { 'Cache-Control': 'private, no-store' } });
 }

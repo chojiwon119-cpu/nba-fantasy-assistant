@@ -15,15 +15,14 @@ import {
   Users,
 } from 'lucide-react';
 import { YahooPageSnapshot } from '@/types/companion';
-import type { PlayerProjectionV1 } from '@/types/companion';
-import type { NBAGame, NBAPlayerGameStat, NBAPlayerIdentity } from '@/lib/nba-data/types';
 
 const REQUEST = 'NBA_ASSISTANT_REQUEST_SYNC';
 const RESPONSE = 'NBA_ASSISTANT_SYNC_STATE';
-const MATCH_REQUEST = 'NBA_ASSISTANT_MATCH_REQUEST';
-const MATCH_RESPONSE = 'NBA_ASSISTANT_MATCH_RESPONSE';
+const SCHEDULE_REQUEST = 'NBA_ASSISTANT_SCHEDULE_REQUEST';
+const SCHEDULE_RESPONSE = 'NBA_ASSISTANT_SCHEDULE_RESPONSE';
 const CACHE_KEY = 'nba-assistant-yahoo-snapshots';
-const RELAY_TIMEOUT_MS = 12000;
+const SCHEDULE_TIMEOUT_MS = 12000;
+const WINDOW_DAYS = 7;
 
 type YahooPlayerDirectory = Record<string, { updatedAt: string; players: Record<string, YahooPageSnapshot['players'][number]> }>;
 
@@ -36,44 +35,39 @@ interface CompanionState {
   playerDirectories: YahooPlayerDirectory;
 }
 
-interface NBAProviderState {
-  provider: string;
-  configured: boolean;
-  connected: boolean | null;
-  modelVersion: string;
-  requiredTier?: string;
-  injurySource?: string;
-  usage?: { used: number; limit: number; remaining: number } | null;
-  message: string;
+interface ScheduleGame {
+  date: string;
+  opponent: string;
+  home: boolean;
 }
 
-interface RelayMatch {
-  yahooPlayerId: string;
-  yahooName: string;
-  status: 'matched' | 'ambiguous' | 'unmatched';
-  confidence: number;
-  reason: string;
-  nbaPlayer?: NBAPlayerIdentity;
-}
-
-interface RelayPayload {
-  collectedAt: string;
-  matches: RelayMatch[];
-  games: NBAGame[];
-  gameStats: NBAPlayerGameStat[];
+interface SchedulePayload {
+  gamesByTeam: Record<string, ScheduleGame[]>;
+  scheduleCoverage: { start: string; end: string } | null;
   errors: string[];
 }
 
-type RelayStatus = 'idle' | 'waiting' | 'ready' | 'timeout';
+type ScheduleStatus = 'idle' | 'waiting' | 'ready' | 'timeout';
+
+interface CompanionProjection {
+  playerId: string;
+  playerName: string;
+  team: string;
+  gamesInWindow: number;
+  gamesPlayedThisSeason: number;
+  availabilityProbability: number;
+  pointsPerActiveGame: number;
+  expectedTotalPoints: number;
+  p10: number;
+  p50: number;
+  p90: number;
+  confidence: number;
+  dataQuality: 'high' | 'medium' | 'low' | 'insufficient';
+  injuryStatus: string;
+  warnings: string[];
+}
 
 const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [], playerDirectories: {} };
-const EMPTY_PROVIDER: NBAProviderState = {
-  provider: 'ESPN NBA Public Data',
-  configured: false,
-  connected: false,
-  modelVersion: 'nba-fpts-v1.0.0',
-  message: 'NBA 데이터 공급자 상태 확인 중',
-};
 
 function relativeTime(value?: string | null): string {
   if (!value) return '동기화 기록 없음';
@@ -92,15 +86,19 @@ function freshness(value?: string | null): 'fresh' | 'aging' | 'stale' | 'empty'
   return 'stale';
 }
 
+function isoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
 export default function DashboardPage() {
   const [companion, setCompanion] = useState<CompanionState>(EMPTY_STATE);
-  const [nbaProvider, setNBAProvider] = useState<NBAProviderState>(EMPTY_PROVIDER);
   const [checking, setChecking] = useState(true);
-  const [relay, setRelay] = useState<RelayPayload | null>(null);
-  const [relayStatus, setRelayStatus] = useState<RelayStatus>('idle');
-  const [projections, setProjections] = useState<PlayerProjectionV1[]>([]);
+  const [schedule, setSchedule] = useState<SchedulePayload | null>(null);
+  const [scheduleStatus, setScheduleStatus] = useState<ScheduleStatus>('idle');
+  const [projections, setProjections] = useState<CompanionProjection[]>([]);
   const [projectionsLoading, setProjectionsLoading] = useState(false);
   const [projectionsError, setProjectionsError] = useState<string>();
+  const [projectionWarnings, setProjectionWarnings] = useState<string[]>([]);
   const [, setClock] = useState(() => Date.now());
 
   const requestSync = useCallback(() => {
@@ -154,20 +152,6 @@ export default function DashboardPage() {
     };
   }, [requestSync]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch('/api/nba/status?probe=1', { signal: controller.signal })
-      .then(async (response) => {
-        const payload = await response.json() as NBAProviderState;
-        setNBAProvider(payload);
-      })
-      .catch((error: unknown) => {
-        if (error instanceof Error && error.name === 'AbortError') return;
-        setNBAProvider((current) => ({ ...current, message: 'NBA 데이터 공급자 상태 확인 실패' }));
-      });
-    return () => controller.abort();
-  }, []);
-
   const latestSync = companion.lastSyncAt
     ?? companion.snapshots.map((snapshot) => snapshot.observedAt).sort().at(-1)
     ?? null;
@@ -188,65 +172,65 @@ export default function DashboardPage() {
   const available = observedPlayers.filter((player) => ['FREE_AGENT', 'WAIVER'].includes(player.availability)).length;
   const pageCoverage = new Set(leagueSnapshots.map((snapshot) => snapshot.pageKind));
 
-  // Ask the Companion browser relay (not the server) to match observed Yahoo players against
-  // its client-side ESPN player directory, since Vercel egress to NBA data sources is blocked.
+  // Players Yahoo's own table gave us a season-average stat line for — these are the ones we
+  // can actually score, since neither NBA.com nor ESPN can be reached to fill the gap for
+  // anyone else (both are blocked from Vercel and from this extension's own fetches alike).
+  const scorablePlayers = useMemo(
+    () => observedPlayers.filter((player) => player.seasonAverage && player.nbaTeam),
+    [observedPlayers],
+  );
+  const teams = useMemo(
+    () => [...new Set(scorablePlayers.map((player) => player.nbaTeam as string))],
+    [scorablePlayers],
+  );
+  const windowStart = useMemo(() => isoDate(new Date()), []);
+  const windowEnd = useMemo(() => {
+    const end = new Date();
+    end.setUTCDate(end.getUTCDate() + (WINDOW_DAYS - 1));
+    return isoDate(end);
+  }, []);
+
+  // Ask the Companion extension how many games each observed team has in the coming week.
+  // This is a lookup against a schedule bundled into the extension at build time (no network
+  // call at all) — see extension/background.js and scripts/build-schedule.cjs.
   useEffect(() => {
-    if (observedPlayers.length === 0) return;
-    const waitingTimer = window.setTimeout(() => setRelayStatus('waiting'), 0);
+    if (teams.length === 0) return;
+    const waitingTimer = window.setTimeout(() => setScheduleStatus('waiting'), 0);
 
-    const onRelayMessage = (event: MessageEvent) => {
-      if (event.source !== window || event.data?.type !== MATCH_RESPONSE) return;
-      const payload = event.data.payload as RelayPayload;
-      setRelay(payload);
-      setRelayStatus('ready');
+    const onScheduleMessage = (event: MessageEvent) => {
+      if (event.source !== window || event.data?.type !== SCHEDULE_RESPONSE) return;
+      const payload = event.data.payload as SchedulePayload;
+      setSchedule(payload);
+      setScheduleStatus('ready');
     };
-    window.addEventListener('message', onRelayMessage);
+    window.addEventListener('message', onScheduleMessage);
 
-    const requestPlayers = observedPlayers.map((player) => ({
-      yahooPlayerId: player.yahooPlayerId,
-      name: player.name,
-      nbaTeam: player.nbaTeam,
-      eligiblePositions: player.eligiblePositions,
-      rawStatus: player.rawStatus,
-    }));
-    window.postMessage({ type: MATCH_REQUEST, payload: { players: requestPlayers } }, window.location.origin);
+    window.postMessage({
+      type: SCHEDULE_REQUEST,
+      payload: { teams, startDate: windowStart, endDate: windowEnd },
+    }, window.location.origin);
 
     const timeoutTimer = window.setTimeout(() => {
-      setRelayStatus((current) => (current === 'ready' ? current : 'timeout'));
-    }, RELAY_TIMEOUT_MS);
+      setScheduleStatus((current) => (current === 'ready' ? current : 'timeout'));
+    }, SCHEDULE_TIMEOUT_MS);
 
     return () => {
-      window.removeEventListener('message', onRelayMessage);
+      window.removeEventListener('message', onScheduleMessage);
       window.clearTimeout(waitingTimer);
       window.clearTimeout(timeoutTimer);
     };
-  }, [observedPlayers]);
+    // teams is derived fresh each render; comparing by its joined value avoids re-requesting
+    // the schedule on every unrelated re-render while still reacting to real team-set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teams.join(','), windowStart, windowEnd]);
 
-  const matchedPlayers = useMemo(() => {
-    if (!relay) return [];
-    return relay.matches
-      .filter((match): match is RelayMatch & { nbaPlayer: NBAPlayerIdentity } => match.status === 'matched' && Boolean(match.nbaPlayer))
-      .map((match) => {
-        const original = observedPlayers.find((player) => player.yahooPlayerId === match.yahooPlayerId);
-        return { match, original, nbaPlayer: match.nbaPlayer };
-      });
-  }, [relay, observedPlayers]);
+  const scheduleReady = scheduleStatus === 'ready';
 
-  const matchSummary = useMemo(() => {
-    if (!relay) return { total: 0, matched: 0, ambiguous: 0, unmatched: 0 };
-    return {
-      total: relay.matches.length,
-      matched: relay.matches.filter((match) => match.status === 'matched').length,
-      ambiguous: relay.matches.filter((match) => match.status === 'ambiguous').length,
-      unmatched: relay.matches.filter((match) => match.status === 'unmatched').length,
-    };
-  }, [relay]);
-
-  // Once the companion has matched players and collected schedule/gamelog data client-side,
-  // send that normalized payload to a same-origin API route that runs the existing projection
-  // model in memory — no outbound request from Vercel is involved.
+  // Once the schedule lookup answers, score each player's Yahoo season-average stat line
+  // against however many games they have this window via the same-origin projection route —
+  // no external NBA data source is called anywhere in this path.
   useEffect(() => {
-    if (matchedPlayers.length === 0) {
+    if (!scheduleReady || scorablePlayers.length === 0) {
       const clearTimer = window.setTimeout(() => setProjections([]), 0);
       return () => window.clearTimeout(clearTimer);
     }
@@ -256,13 +240,13 @@ export default function DashboardPage() {
       setProjectionsError(undefined);
     }, 0);
 
-    const players = matchedPlayers.map(({ nbaPlayer, original }) => ({
-      id: nbaPlayer.id,
-      name: nbaPlayer.name,
-      teamId: nbaPlayer.teamId,
-      teamAbbreviation: nbaPlayer.teamAbbreviation,
-      positions: nbaPlayer.positions,
-      rawStatus: original?.rawStatus,
+    const players = scorablePlayers.map((player) => ({
+      yahooPlayerId: player.yahooPlayerId,
+      name: player.name,
+      team: player.nbaTeam,
+      seasonAverage: player.seasonAverage,
+      rawStatus: player.rawStatus,
+      gamesInWindow: schedule?.gamesByTeam[player.nbaTeam as string]?.length ?? 0,
     }));
 
     fetch('/api/projections/companion', {
@@ -270,16 +254,17 @@ export default function DashboardPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         players,
-        games: relay?.games ?? [],
-        gameStats: relay?.gameStats ?? [],
-        horizon: 'next_7_days',
+        scheduleCoverage: schedule?.scheduleCoverage ?? null,
+        windowStart,
+        windowEnd,
       }),
       signal: controller.signal,
     })
       .then(async (response) => {
-        const payload = await response.json() as { projections?: PlayerProjectionV1[]; error?: string };
+        const payload = await response.json() as { projections?: CompanionProjection[]; warnings?: string[]; error?: string };
         if (!response.ok || !payload.projections) throw new Error(payload.error ?? '예측 점수 계산 실패');
         setProjections(payload.projections);
+        setProjectionWarnings(payload.warnings ?? []);
       })
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === 'AbortError') return;
@@ -291,12 +276,10 @@ export default function DashboardPage() {
       window.clearTimeout(startTimer);
       controller.abort();
     };
-    // matchedPlayers is derived fresh each render from relay + observedPlayers; comparing by
-    // length + relay.collectedAt avoids re-fetching on every unrelated re-render.
+    // scorablePlayers is derived fresh each render; length is a reasonable proxy since it only
+    // changes when the underlying Yahoo directory actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchedPlayers.length, relay?.collectedAt]);
-
-  const companionConnected = relayStatus === 'ready';
+  }, [scheduleReady, scorablePlayers.length, schedule]);
 
   return (
     <div className="playbook-shell">
@@ -348,14 +331,14 @@ export default function DashboardPage() {
           <article className="metric-card"><span className="metric-icon blue"><Users size={19} /></span><div><span>확인된 선수</span><strong>{observedPlayers.length || '—'}</strong><small>현재 열린 Yahoo 화면 기준</small></div></article>
           <article className="metric-card"><span className="metric-icon orange"><Activity size={19} /></span><div><span>로스터 등록</span><strong>{rostered || '—'}</strong><small>중복 제거 후</small></div></article>
           <article className="metric-card"><span className="metric-icon green"><Sparkles size={19} /></span><div><span>FA / Waiver</span><strong>{available || '—'}</strong><small>Players 화면 관측값</small></div></article>
-          <article className="metric-card"><span className="metric-icon purple"><Database size={19} /></span><div><span>NBA ID 자동 연결</span><strong>{relayStatus === 'waiting' ? '…' : matchSummary.total ? `${matchSummary.matched}/${matchSummary.total}` : '—'}</strong><small>{relayStatus === 'timeout' ? 'Companion v0.2.0 필요' : pageCoverage.size ? `${[...pageCoverage].join(' · ')} 화면` : '수집 대기'}</small></div></article>
+          <article className="metric-card"><span className="metric-icon purple"><Database size={19} /></span><div><span>시즌 스탯 확인</span><strong>{scorablePlayers.length || '—'}</strong><small>{pageCoverage.size ? `${[...pageCoverage].join(' · ')} 화면` : '수집 대기'}</small></div></article>
         </section>
 
         <section className="dashboard-grid">
           <article className="panel primary-panel">
             <div className="panel-heading">
               <div><span className="eyebrow">DECISION CENTER</span><h2>오늘의 판단</h2></div>
-              <span className="model-chip">{nbaProvider.modelVersion}</span>
+              <span className="model-chip">nba-fpts-v1.1.0-season-avg</span>
             </div>
             {observedPlayers.length === 0 ? (
               <div className="empty-decision">
@@ -367,8 +350,8 @@ export default function DashboardPage() {
             ) : (
               <div className="decision-list">
                 <div className="decision-row"><span className="decision-rank">01</span><div><strong>리그 상태 수집 완료</strong><p>{observedPlayers.length}명의 선수를 기준으로 예측 준비가 가능합니다.</p></div><span className="decision-status ready">READY</span></div>
-                <div className="decision-row"><span className="decision-rank">02</span><div><strong>{matchSummary.matched === matchSummary.total && matchSummary.total > 0 ? 'Yahoo 선수 자동 연결 완료' : 'Yahoo 선수 자동 연결 확인 중'}</strong><p>{relayStatus === 'timeout' ? 'Companion 확장을 v0.2.0으로 업데이트(재로드)해야 브라우저에서 직접 매칭이 가능합니다.' : `${matchSummary.total}명 중 ${matchSummary.matched}명을 NBA 공식 선수 ID에 연결했습니다.`}</p></div><span className={`decision-status ${matchSummary.matched === matchSummary.total && matchSummary.total > 0 ? 'ready' : 'waiting'}`}>{relayStatus === 'waiting' ? 'SYNC' : matchSummary.unmatched || matchSummary.ambiguous ? 'CHECK' : matchSummary.total > 0 ? 'READY' : 'WAITING'}</span></div>
-                <div className="decision-row"><span className="decision-rank">03</span><div><strong>{companionConnected && matchedPlayers.length > 0 ? '예측 엔진 데이터 연결 완료' : '예측 엔진 데이터 연결 대기'}</strong><p>{companionConnected ? `Companion이 브라우저에서 직접 수집한 일정·스탯으로 ${matchedPlayers.length}명의 예측을 계산합니다.` : 'Companion 확장이 응답하면 예측 계산이 시작됩니다.'}</p></div><span className={`decision-status ${companionConnected ? 'ready' : 'waiting'}`}>{companionConnected ? 'READY' : 'WAITING'}</span></div>
+                <div className="decision-row"><span className="decision-rank">02</span><div><strong>{scorablePlayers.length > 0 ? 'Yahoo 시즌 평균 스탯 읽기 완료' : 'Yahoo 시즌 평균 스탯 확인 중'}</strong><p>{scorablePlayers.length}명의 선수에서 시즌 평균 스탯(Stats 드롭다운이 &quot;Season (avg)&quot;일 때)을 읽었습니다.</p></div><span className={`decision-status ${scorablePlayers.length > 0 ? 'ready' : 'waiting'}`}>{scorablePlayers.length > 0 ? 'READY' : 'WAITING'}</span></div>
+                <div className="decision-row"><span className="decision-rank">03</span><div><strong>{scheduleReady ? '일정 데이터 연결 완료' : '일정 데이터 연결 대기'}</strong><p>{scheduleStatus === 'timeout' ? 'Companion 확장을 v0.3.0으로 업데이트(재로드)해야 일정을 읽을 수 있습니다.' : schedule?.scheduleCoverage ? `번들 일정 범위: ${schedule.scheduleCoverage.start} ~ ${schedule.scheduleCoverage.end}` : 'Companion 확장이 응답하면 일정 조회가 시작됩니다.'}</p></div><span className={`decision-status ${scheduleReady ? 'ready' : 'waiting'}`}>{scheduleReady ? 'READY' : 'WAITING'}</span></div>
               </div>
             )}
           </article>
@@ -376,18 +359,18 @@ export default function DashboardPage() {
           <aside className="panel data-health">
             <div className="panel-heading"><div><span className="eyebrow">DATA HEALTH</span><h2>판단 신뢰도</h2></div></div>
             <div className="health-row"><span>Yahoo 로스터</span><strong className={syncFreshness}>{relativeTime(latestSync)}</strong></div>
-            <div className="health-row"><span>NBA 스탯</span><strong className={companionConnected ? 'fresh' : 'stale'}>{companionConnected ? 'Companion 브라우저 릴레이 연결됨' : `서버 경로: ${nbaProvider.message}`}</strong></div>
+            <div className="health-row"><span>NBA 스탯</span><strong className={scorablePlayers.length > 0 ? 'fresh' : 'stale'}>{scorablePlayers.length > 0 ? 'Yahoo 시즌 평균에서 직접 읽음' : '시즌 평균 스탯 대기'}</strong></div>
+            <div className="health-row"><span>일정 데이터</span><strong className={scheduleReady ? 'fresh' : 'stale'}>{scheduleReady ? '번들 일정 연결됨' : '연결 대기'}</strong></div>
             <div className="health-row"><span>부상 정보</span><strong className={companion.installed ? 'fresh' : 'stale'}>{companion.installed ? 'Yahoo 상태 수집됨' : 'Yahoo Companion 대기'}</strong></div>
             <div className="health-row"><span>데이터 비용</span><strong className="fresh">무료 · API 키 없음</strong></div>
-            <div className="health-row"><span>예측 모델</span><strong className="fresh">v1 구현 완료</strong></div>
             <p className="health-footnote">핵심 데이터가 오래되거나 누락되면 과거 평균으로 대체하지 않고 추천을 중단합니다.</p>
           </aside>
         </section>
 
-        {matchedPlayers.length > 0 && (
+        {scorablePlayers.length > 0 && (
           <section className="panel projections-panel">
             <div className="panel-heading">
-              <div><span className="eyebrow">NEXT 7 DAYS</span><h2>선수별 예상 점수</h2></div>
+              <div><span className="eyebrow">NEXT {WINDOW_DAYS} DAYS</span><h2>선수별 예상 점수</h2></div>
               {projectionsLoading && <span className="model-chip">계산 중…</span>}
             </div>
             {projectionsError ? (
@@ -398,9 +381,9 @@ export default function DashboardPage() {
                   <thead>
                     <tr>
                       <th>Yahoo 선수</th>
-                      <th>NBA 매칭</th>
-                      <th>팀/포지션</th>
+                      <th>팀</th>
                       <th>경기 수</th>
+                      <th>경기당 예상</th>
                       <th>P10</th>
                       <th>P50</th>
                       <th>P90</th>
@@ -410,14 +393,14 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {matchedPlayers.map(({ match, nbaPlayer }) => {
-                      const projection = projections.find((item) => item.playerId === nbaPlayer.id);
+                    {scorablePlayers.map((player) => {
+                      const projection = projections.find((item) => item.playerId === player.yahooPlayerId);
                       return (
-                        <tr key={match.yahooPlayerId}>
-                          <td>{match.yahooName}</td>
-                          <td>{nbaPlayer.name} <small>#{nbaPlayer.id}</small></td>
-                          <td>{nbaPlayer.teamAbbreviation} · {nbaPlayer.positions.join('/') || '—'}</td>
-                          <td>{projection?.expectedGames ?? '—'}</td>
+                        <tr key={player.yahooPlayerId}>
+                          <td>{player.name}</td>
+                          <td>{player.nbaTeam}</td>
+                          <td>{projection?.gamesInWindow ?? '—'}</td>
+                          <td>{projection?.pointsPerActiveGame ?? '—'}</td>
                           <td>{projection?.p10 ?? '—'}</td>
                           <td>{projection?.p50 ?? '—'}</td>
                           <td>{projection?.p90 ?? '—'}</td>
@@ -431,9 +414,9 @@ export default function DashboardPage() {
                 </table>
               </div>
             )}
-            {matchSummary.unmatched > 0 || matchSummary.ambiguous > 0 ? (
-              <p className="health-footnote">매칭 실패 {matchSummary.unmatched}명 · 동명이인 확인 필요 {matchSummary.ambiguous}명 — 해당 선수는 예측에서 제외되었습니다.</p>
-            ) : null}
+            {projectionWarnings.map((warning) => (
+              <p className="health-footnote" key={warning}>{warning}</p>
+            ))}
           </section>
         )}
 

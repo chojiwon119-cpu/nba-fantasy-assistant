@@ -1,15 +1,13 @@
 {
   "manifest_version": 3,
   "name": "NBA Fantasy Assistant Companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Reads the Yahoo Fantasy Basketball page currently open and shares a minimal, read-only snapshot with the personal Assistant.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://basketball.fantasysports.yahoo.com/*",
     "https://nba-fantasy-assistant.vercel.app/*",
-    "http://localhost:3000/*",
-    "https://site.api.espn.com/*",
-    "https://site.web.api.espn.com/*"
+    "http://localhost:3000/*"
   ],
   "background": {
     "service_worker": "background.js"

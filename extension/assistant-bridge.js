@@ -1,8 +1,8 @@
 const REQUEST = 'NBA_ASSISTANT_REQUEST_SYNC';
 const RESPONSE = 'NBA_ASSISTANT_SYNC_STATE';
-const MATCH_REQUEST = 'NBA_ASSISTANT_MATCH_REQUEST';
-const MATCH_RESPONSE = 'NBA_ASSISTANT_MATCH_RESPONSE';
-const MAX_PLAYERS = 60;
+const SCHEDULE_REQUEST = 'NBA_ASSISTANT_SCHEDULE_REQUEST';
+const SCHEDULE_RESPONSE = 'NBA_ASSISTANT_SCHEDULE_RESPONSE';
+const MAX_TEAMS = 30;
 
 window.addEventListener('message', async (event) => {
   if (event.source !== window || !event.data) return;
@@ -30,21 +30,22 @@ window.addEventListener('message', async (event) => {
     return;
   }
 
-  if (event.data.type === MATCH_REQUEST) {
-    const players = Array.isArray(event.data.payload?.players) ? event.data.payload.players.slice(0, MAX_PLAYERS) : [];
+  if (event.data.type === SCHEDULE_REQUEST) {
+    const payload = event.data.payload || {};
+    const teams = Array.isArray(payload.teams) ? payload.teams.slice(0, MAX_TEAMS) : [];
     chrome.runtime.sendMessage(
-      { type: 'NBA_ASSISTANT_MATCH_PLAYERS', payload: { players } },
+      { type: SCHEDULE_REQUEST, payload: { teams, startDate: payload.startDate, endDate: payload.endDate } },
       (response) => {
         if (chrome.runtime.lastError) {
           window.postMessage({
-            type: MATCH_RESPONSE,
-            payload: { collectedAt: new Date().toISOString(), matches: [], games: [], gameStats: [], errors: ['background_unavailable'] },
+            type: SCHEDULE_RESPONSE,
+            payload: { gamesByTeam: {}, scheduleCoverage: null, errors: ['background_unavailable'] },
           }, window.location.origin);
           return;
         }
         window.postMessage({
-          type: MATCH_RESPONSE,
-          payload: response?.payload || { collectedAt: new Date().toISOString(), matches: [], games: [], gameStats: [], errors: ['empty_response'] },
+          type: SCHEDULE_RESPONSE,
+          payload: response?.payload || { gamesByTeam: {}, scheduleCoverage: null, errors: ['empty_response'] },
         }, window.location.origin);
       },
     );
