@@ -4,7 +4,7 @@ import { getNBADataProvider, NBAProviderError } from '@/lib/nba-data';
 export async function GET(request: NextRequest) {
   const provider = getNBADataProvider();
   const probe = request.nextUrl.searchParams.get('probe') === '1';
-  const isKeylessProvider = provider.id === 'nba-official';
+  const isKeylessProvider = provider.id === 'nba-official' || provider.id === 'espn-public';
   const isFreeProvider = isKeylessProvider || provider.id === 'api-sports';
   const common = {
     provider: provider.displayName,

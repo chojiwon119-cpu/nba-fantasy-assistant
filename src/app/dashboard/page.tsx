@@ -50,7 +50,7 @@ interface PlayerMatchState {
 
 const EMPTY_STATE: CompanionState = { installed: false, readOnly: true, snapshots: [] };
 const EMPTY_PROVIDER: NBAProviderState = {
-  provider: 'NBA.com Official Data',
+  provider: 'ESPN NBA Public Data',
   configured: false,
   connected: false,
   modelVersion: 'nba-fpts-v1.0.0',

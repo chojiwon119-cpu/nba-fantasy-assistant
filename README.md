@@ -86,13 +86,13 @@ PG×1, SG×1, G×1, SF×1, PF×1, F×1, C×2, UTIL×2, BN×3, IL×3, IL+×1 (총
 
 ## NBA 데이터 자동 수집 및 예측 모델 v1
 
-NBA 데이터는 공급자 어댑터를 통해 서버에서만 수집됩니다. 기본 공급자는 무료
-[NBA.com](https://www.nba.com/) 공식 데이터이며 API 키나 유료 구독이 필요하지 않습니다.
-공식 시즌 일정과 NBA Stats 게임로그를 서버에서 읽습니다. API-Sports와 BALLDONTLIE는
-선택 가능한 대체 공급자로만 남겨둡니다(`api-sports-legacy`, `balldontlie`). 기존 배포의
-`api-sports` 설정은 NBA 공식 공급자로 자동 마이그레이션됩니다.
+NBA 데이터는 공급자 어댑터를 통해 서버에서만 수집됩니다. NBA.com 공식 웹 피드를
+우선 검토했지만 Vercel 서버 요청이 차단되므로, 운영 기본값은 무료
+[ESPN NBA](https://www.espn.com/nba/) 공개 데이터입니다. API 키나 유료 구독은 필요하지
+않습니다. NBA.com 어댑터는 향후 네트워크 접근이 가능할 때 사용할 수 있도록 남겨두고,
+API-Sports와 BALLDONTLIE도 선택 가능한 대체 공급자로 유지합니다.
 
-1. `.env.example`처럼 `NBA_DATA_PROVIDER=nba-official`을 사용합니다. 환경변수를 생략해도 이 값이 기본입니다.
+1. `.env.example`처럼 `NBA_DATA_PROVIDER=espn-public`을 사용합니다. 기존 `api-sports` 배포 설정도 자동 전환됩니다.
 2. `/api/nba/status?probe=1`에서 공식 데이터 연결 상태를 확인합니다.
 3. Yahoo Companion이 읽은 선수들은 `/api/nba/match`에서 정규화된 이름과 팀으로 NBA ID에 자동 연결됩니다.
 4. 연결된 숫자 ID는 `/api/projections?player_ids=선수ID&horizon=next_7_days`의 예측 입력으로 사용됩니다.
@@ -102,7 +102,7 @@ NBA 데이터는 공급자 어댑터를 통해 서버에서만 수집됩니다. 
 함께 P10/P50/P90, 데이터 품질, 신뢰도 및 적용된 요인이 포함됩니다. 최근 유효 표본이
 3경기 미만이면 `insufficient`로 표시합니다.
 
-동일한 NBA.com 요청은 서버에서 캐시하고 진행 중 요청도 병합합니다. NBA.com의 웹 데이터
+동일한 외부 요청은 서버에서 캐시하고 진행 중 요청도 병합합니다. 공개 데이터
 엔드포인트에는 별도의 공개 SLA가 없으므로 장애 시 추천을 중단하는 fail-closed 원칙을
 유지합니다. 선수 상태는 유료 부상 API 대신 Yahoo Companion이 현재 화면에서 읽은
 GTD/OUT/IL 정보를 사용합니다.
