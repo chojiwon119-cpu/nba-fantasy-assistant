@@ -103,6 +103,11 @@
     for (const anchor of anchors) {
       const name = anchor.textContent?.trim();
       if (!name || name.length < 2) continue;
+      // Yahoo's player rows also include a "Player Note" / "No new player Notes" link that
+      // happens to resolve to the same player id as the real name link — without this guard
+      // it can overwrite the correct name in the map below (Map.set with the same key wins
+      // on whichever anchor is visited last in DOM order).
+      if (/\bnotes?\b/i.test(name)) continue;
       const row = anchor.closest('tr') || anchor.closest('[role="row"]') || anchor.parentElement;
       const rowText = row?.textContent?.replace(/\s+/g, ' ').trim() || name;
       const positions = [...new Set(rowText.match(POSITION_PATTERN) || [])];
