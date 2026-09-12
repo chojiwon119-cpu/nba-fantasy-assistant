@@ -112,9 +112,10 @@
 
     const state = await chrome.storage.local.get('latestYahooSnapshots');
     const previous = Array.isArray(state.latestYahooSnapshots) ? state.latestYahooSnapshots : [];
-    const withoutCurrentPage = previous.filter((item) =>
-      !(item.leagueId === snapshot.leagueId && item.pageKind === snapshot.pageKind && item.fantasyTeamId === snapshot.fantasyTeamId)
-    );
+    // Keyed by the exact page URL (not just pageKind) so paginated lists like Players/FA
+    // (25 per page) accumulate across pages instead of each page overwriting the last.
+    // Revisiting the same URL still replaces just that one entry with fresher data.
+    const withoutCurrentPage = previous.filter((item) => item.pageUrl !== snapshot.pageUrl);
     const latestYahooSnapshots = [...withoutCurrentPage, snapshot]
       .sort((a, b) => b.observedAt.localeCompare(a.observedAt))
       .slice(0, 40);
