@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
   "name": "NBA Fantasy Assistant Companion",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reads the Yahoo Fantasy Basketball page currently open and shares a minimal, read-only snapshot with the personal Assistant.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://basketball.fantasysports.yahoo.com/*",
-    "http://localhost:3000/*"
+    "https://nba-fantasy-assistant.vercel.app/*",
+    "http://localhost:3000/*",
+    "https://site.api.espn.com/*",
+    "https://site.web.api.espn.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -18,7 +21,10 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://localhost:3000/*"],
+      "matches": [
+        "https://nba-fantasy-assistant.vercel.app/*",
+        "http://localhost:3000/*"
+      ],
       "js": ["assistant-bridge.js"],
       "run_at": "document_idle"
     }
@@ -27,4 +33,3 @@
     "default_title": "NBA Fantasy Assistant Companion"
   }
 }
-
