@@ -4,6 +4,8 @@ import { useSearchParams } from 'next/navigation';
 import { Player } from '@/types';
 import Link from 'next/link';
 
+const LEAGUE_STORAGE_KEY = 'nba-assistant-selected-league';
+
 interface WaiverResult {
   pickup_player: Player; drop_player: Player;
   pickup_score: number; drop_score: number;
@@ -12,7 +14,17 @@ interface WaiverResult {
 
 function WaiverContent() {
   const searchParams = useSearchParams();
-  const leagueKey = searchParams.get('league_key') || '';
+  const [leagueKey, setLeagueKey] = useState(searchParams.get('league_key') || '');
+  useEffect(() => {
+    if (leagueKey) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const stored = window.localStorage.getItem(LEAGUE_STORAGE_KEY);
+        if (stored) setLeagueKey(stored);
+      } catch { /* ignore */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [leagueKey]);
   const [freeAgents, setFreeAgents] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [pickupKey, setPickupKey] = useState('');

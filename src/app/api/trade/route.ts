@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiError, requireYahooTokens, resolvePlayers } from '@/lib/api';
+import { runProjectionModel } from '@/lib/projection-model';
 import { Player } from '@/types';
+
+async function projectedValue(players: Player[], tokens: Awaited<ReturnType<typeof requireYahooTokens>>) {
+  if (players.length === 0) return new Map<string, number>();
+  const inputs = players.map((player) => ({
+    player_key: player.player_key, name: player.name, team: player.team,
+    status: player.status, injury_note: player.injury_note,
+  }));
+  const result = await runProjectionModel(tokens, { players: inputs, horizon: 'rest_of_season' });
+  return new Map(result.projections.map((projection) => [projection.playerId, projection.pointsPerActiveGame]));
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,13 +26,19 @@ export async function POST(request: NextRequest) {
       resolvePlayers(leagueKey, receivingKeys, tokens),
     ]);
     if (giving.length !== givingKeys.length || receiving.length !== receivingKeys.length) return NextResponse.json({ error: '일부 선수를 Yahoo에서 찾지 못했습니다. player_key를 확인하세요.' }, { status: 404 });
-    const score = (players: Player[]) => players.reduce((sum, player) => sum + (player.fantasy_score || 0), 0);
+
+    const projected = await projectedValue([...giving, ...receiving], tokens);
+    const score = (players: Player[]) => players.reduce((sum, player) => sum + (projected.get(player.player_key) ?? player.fantasy_score ?? 0), 0);
     const givingScore = score(giving);
     const receivingScore = score(receiving);
     const scoreDiff = receivingScore - givingScore;
     const fairnessScore = Math.max(0, Math.min(100, Math.round(50 + scoreDiff / Math.max(1, givingScore + receivingScore) * 100)));
     const verdict = fairnessScore >= 55 ? 'favorable' : fairnessScore <= 45 ? 'unfavorable' : 'balanced';
-    return NextResponse.json({ giving, receiving, giving_score: givingScore, receiving_score: receivingScore, score_diff: scoreDiff, fairness_score: fairnessScore, verdict, verdict_reason: verdict === 'favorable' ? '받는 선수 쪽의 Fantasy Score가 더 높습니다.' : verdict === 'unfavorable' ? '주는 선수 쪽의 Fantasy Score가 더 높습니다.' : '양쪽의 Fantasy Score 차이가 크지 않습니다.' });
+    return NextResponse.json({
+      giving, receiving, giving_score: givingScore, receiving_score: receivingScore, score_diff: scoreDiff, fairness_score: fairnessScore, verdict,
+      verdict_reason: verdict === 'favorable' ? '받는 선수 쪽의 예측 점수가 더 높습니다.' : verdict === 'unfavorable' ? '주는 선수 쪽의 예측 점수가 더 높습니다.' : '양쪽의 예측 점수 차이가 크지 않습니다.',
+      model: 'rest_of_season projection (Yahoo date-stats 기반)',
+    });
   } catch (error) {
     return apiError(error);
   }

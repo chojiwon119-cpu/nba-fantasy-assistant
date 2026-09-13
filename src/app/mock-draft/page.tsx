@@ -1,30 +1,29 @@
 'use client';
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import Link from 'next/link';
-import { useCompanionSync } from '@/hooks/useCompanionSync';
+import { Player } from '@/types';
+import { PlayerProjectionV1 } from '@/types/projections';
 import { scoreStatLine, ScoringWeights as ProjectionWeights } from '@/lib/projections';
-import { parseYahooInjuryStatus } from '@/lib/nba-data/injury-status';
-import { PlayerStats } from '@/types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type ScoringWeights = ProjectionWeights;
 interface RosterSlots { PG:number; SG:number; G:number; SF:number; PF:number; F:number; C:number; UTIL:number; BN:number; }
 interface DraftSettings { numTeams:number; myPick:number; draftType:'snake'|'linear'; rosterSlots:RosterSlots; scoringWeights:ScoringWeights; }
 
-// A player drafted from the Companion's live Yahoo player directory, scored with the exact
-// same scoreStatLine()/SCORING_WEIGHTS the Dashboard's projections use — never from the old
-// static, out-of-date playerDb.ts season snapshot.
+// A player pulled from the live Yahoo league player pool (`/api/league/players`), scored by the
+// rest-of-season projection model (`/api/projections`, Yahoo date-stats-based) rather than the
+// old static playerDb.ts snapshot or a raw season stat line.
 interface LivePlayer {
   id: string;
   name: string;
   nbaTeam: string;
   positions: string[];
-  stats: Omit<PlayerStats, 'GP'>;
+  stats: Player['stats'];
   gp: number;
-  mpg: number;
+  projectedScore: number;
+  dataQuality: PlayerProjectionV1['dataQuality'];
   injuryStatus: string;
   availabilityProbability: number;
-  rawStatus?: string;
 }
 
 const DEFAULT_WEIGHTS: ScoringWeights = { FGM:2, FGA:-1, FTM:1.5, FTA:-1, threePM:3, threePA:-1, PTS:1, REB:1.2, AST:1.8, ST:3, BLK:3, TO:-1, DD:3, TD:5 };
@@ -32,9 +31,13 @@ const DEFAULT_SLOTS: RosterSlots = { PG:1, SG:1, G:1, SF:1, PF:1, F:1, C:2, UTIL
 const ACTIVE_SLOTS = (s: RosterSlots) => s.PG + s.SG + s.G + s.SF + s.PF + s.F + s.C + s.UTIL;
 const TOTAL_SLOTS = (s: RosterSlots) => ACTIVE_SLOTS(s) + s.BN;
 const MIN_GP_FOR_RELIABLE = 5;
+const LEAGUE_STORAGE_KEY = 'nba-assistant-selected-league';
+const PROJECTION_CHUNK_SIZE = 25;
 
 function projectedScore(player: LivePlayer, weights: ScoringWeights): number {
-  return scoreStatLine(player.stats, weights);
+  // Fall back to the raw season stat line if the projection model hasn't scored this player
+  // (e.g. insufficient recent-date sample) so the draft pool doesn't just drop them silently.
+  return player.projectedScore || scoreStatLine(player.stats, weights);
 }
 
 // ── CPU Draft Logic ───────────────────────────────────────────────────────────
@@ -77,15 +80,14 @@ function SetupScreen({ livePlayers, onStart }: { livePlayers: LivePlayer[]; onSt
       </div>
 
       <div className="card" style={{marginBottom:'1.5rem', borderColor: notEnoughPlayers ? 'var(--yellow)' : undefined}}>
-        <h3 style={{fontWeight:600,marginBottom:'0.5rem',fontSize:14,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'0.05em'}}>선수 데이터 (Yahoo Companion)</h3>
+        <h3 style={{fontWeight:600,marginBottom:'0.5rem',fontSize:14,color:'var(--text2)',textTransform:'uppercase',letterSpacing:'0.05em'}}>선수 데이터 (Yahoo League API)</h3>
         <p style={{fontSize:13,color:'var(--text2)',lineHeight:1.6}}>
-          Yahoo Fantasy의 Player List(Stats: &quot;Season (avg)&quot;)에서 지금까지 확인된 선수 <strong style={{color:'var(--text)'}}>{livePlayers.length}명</strong>으로 드래프트를 구성합니다.
-          외부 사이트 없이 야후 화면에서 직접 읽은 시즌 평균 스탯으로 계산합니다.
+          내 Yahoo 리그에서 자동으로 불러온 선수 <strong style={{color:'var(--text)'}}>{livePlayers.length}명</strong>으로 드래프트를 구성합니다.
+          가치 순위는 최근 스탯 기반 잔여 시즌 예측(rest_of_season) 점수를 사용합니다.
         </p>
         {notEnoughPlayers && (
           <p style={{fontSize:12,color:'var(--yellow)',marginTop:8}}>
-            이번 설정({numTeams}팀 × {totalRounds}라운드 = {neededPlayers}명)에 필요한 선수 수보다 적습니다.
-            Yahoo Fantasy Player List에서 &quot;All Players&quot; 필터로 페이지를 여러 장 넘겨서 더 많은 선수를 화면에 띄워주세요 (직접 입력은 필요 없습니다).
+            이번 설정({numTeams}팀 × {totalRounds}라운드 = {neededPlayers}명)에 필요한 선수 수보다 적습니다. Yahoo 리그 크기에 따라 자동으로 불러오는 인원이 제한될 수 있습니다.
           </p>
         )}
       </div>
@@ -329,7 +331,7 @@ function DraftRoom({ livePlayers, settings, onReset }: { livePlayers: LivePlayer
                   <th style={{textAlign:'right'}}>PTS</th>
                   <th style={{textAlign:'right'}}>REB</th>
                   <th style={{textAlign:'right'}}>AST</th>
-                  <th style={{textAlign:'right'}}>GP</th>
+                  <th style={{textAlign:'right'}}>표본</th>
                   <th style={{textAlign:'right',width:90}}></th>
                 </tr>
               </thead>
@@ -495,43 +497,105 @@ function DraftRoom({ livePlayers, settings, onReset }: { livePlayers: LivePlayer
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
+function useDraftPlayerPool() {
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [projections, setProjections] = useState<Map<string, PlayerProjectionV1>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const statusRes = await fetch('/api/auth/status');
+        const statusPayload = await statusRes.json() as { authenticated: boolean };
+        if (cancelled) return;
+        setAuthenticated(statusPayload.authenticated);
+        if (!statusPayload.authenticated) return;
+
+        let leagueKey = '';
+        try { leagueKey = window.localStorage.getItem(LEAGUE_STORAGE_KEY) ?? ''; } catch { /* ignore */ }
+        if (!leagueKey) {
+          const leaguesRes = await fetch('/api/league');
+          const leaguesPayload = await leaguesRes.json() as { leagues?: { league_key: string }[] };
+          leagueKey = leaguesPayload.leagues?.[0]?.league_key ?? '';
+        }
+        if (!leagueKey) return;
+
+        const playersRes = await fetch(`/api/league/players?league_key=${encodeURIComponent(leagueKey)}`);
+        const playersPayload = await playersRes.json() as { players?: Player[]; error?: string };
+        if (!playersRes.ok || !playersPayload.players) throw new Error(playersPayload.error ?? '선수 목록 조회 실패');
+        if (cancelled) return;
+        setPlayers(playersPayload.players);
+
+        const inputs = playersPayload.players.map((player) => ({
+          player_key: player.player_key, name: player.name, team: player.team,
+          status: player.status, injury_note: player.injury_note,
+        }));
+        const chunks: typeof inputs[] = [];
+        for (let i = 0; i < inputs.length; i += PROJECTION_CHUNK_SIZE) chunks.push(inputs.slice(i, i + PROJECTION_CHUNK_SIZE));
+        const results = await Promise.all(chunks.map(async (chunk) => {
+          const res = await fetch('/api/projections', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ players: chunk, horizon: 'rest_of_season' }),
+          });
+          const payload = await res.json() as { projections?: PlayerProjectionV1[] };
+          return payload.projections ?? [];
+        }));
+        if (cancelled) return;
+        setProjections(new Map(results.flat().map((p) => [p.playerId, p])));
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : '데이터를 불러오지 못했습니다.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return { authenticated, players, projections, loading, error };
+}
+
 export default function MockDraftPage() {
-  const { players: observedPlayers, installed } = useCompanionSync();
+  const { authenticated, players, projections, loading, error } = useDraftPlayerPool();
   const [settings, setSettings] = useState<DraftSettings|null>(null);
 
   const livePlayers = useMemo<LivePlayer[]>(() => {
-    return observedPlayers
-      .filter((player) => player.seasonAverage && player.nbaTeam)
-      .map((player) => {
-        const sa = player.seasonAverage!;
-        const injury = parseYahooInjuryStatus(player.rawStatus);
-        return {
-          id: player.yahooPlayerId,
-          name: player.name,
-          nbaTeam: player.nbaTeam!,
-          positions: player.eligiblePositions.length ? player.eligiblePositions : (player.rosterSlot ? [player.rosterSlot] : []),
-          stats: {
-            FGA: sa.FGA, FGM: sa.FGM, FTA: sa.FTA, FTM: sa.FTM,
-            threePA: sa.threePA, threePM: sa.threePM,
-            PTS: sa.PTS, REB: sa.REB, AST: sa.AST, ST: sa.ST, BLK: sa.BLK, TO: sa.TO, DD: sa.DD, TD: sa.TD,
-          },
-          gp: sa.GP,
-          mpg: sa.MPG,
-          injuryStatus: injury.status,
-          availabilityProbability: injury.availabilityProbability,
-          rawStatus: player.rawStatus,
-        };
-      });
-  }, [observedPlayers]);
+    return players.map((player) => {
+      const projection = projections.get(player.player_key);
+      return {
+        id: player.player_key,
+        name: player.name,
+        nbaTeam: player.team,
+        positions: player.positions,
+        stats: player.stats,
+        gp: player.stats.GP,
+        projectedScore: projection?.pointsPerActiveGame ?? 0,
+        dataQuality: projection?.dataQuality ?? 'insufficient',
+        injuryStatus: projection?.injuryStatus ?? 'UNKNOWN',
+        availabilityProbability: projection?.availabilityProbability ?? 0.85,
+      };
+    });
+  }, [players, projections]);
 
-  if (!installed || livePlayers.length === 0) {
+  if (authenticated === false) {
+    return (
+      <div style={{minHeight:'100vh',padding:'2rem',maxWidth:700,margin:'0 auto',textAlign:'center'}}>
+        <h1 style={{fontSize:20,fontWeight:700,marginBottom:'0.75rem'}}>🏀 Mock Draft</h1>
+        <p style={{color:'var(--text2)',fontSize:14,lineHeight:1.7}}>Yahoo 로그인이 필요합니다.</p>
+        <Link href="/dashboard" style={{display:'inline-block',marginTop:'1.25rem',color:'var(--accent)',fontSize:13}}>← 대시보드로 돌아가기</Link>
+      </div>
+    );
+  }
+
+  if (loading || livePlayers.length === 0) {
     return (
       <div style={{minHeight:'100vh',padding:'2rem',maxWidth:700,margin:'0 auto',textAlign:'center'}}>
         <h1 style={{fontSize:20,fontWeight:700,marginBottom:'0.75rem'}}>🏀 Mock Draft</h1>
         <p style={{color:'var(--text2)',fontSize:14,lineHeight:1.7}}>
-          아직 Yahoo Companion에서 읽은 선수 시즌 스탯이 없습니다.<br/>
-          Yahoo Fantasy Basketball의 Player List 화면(Stats: &quot;Season (avg)&quot;)을 열어 몇 페이지 넘겨보시면
-          자동으로 채워집니다. 직접 입력할 내용은 없습니다.
+          {error ? error : loading ? 'Yahoo 리그에서 선수 목록을 자동으로 불러오는 중입니다...' : '이 리그에서 선수를 찾지 못했습니다.'}
         </p>
         <Link href="/dashboard" style={{display:'inline-block',marginTop:'1.25rem',color:'var(--accent)',fontSize:13}}>← 대시보드로 돌아가기</Link>
       </div>

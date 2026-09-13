@@ -215,6 +215,68 @@ export async function fetchPlayersByKeys(leagueKey: string, playerKeys: string[]
   return parsePlayerCollection(data?.fantasy_content?.league?.[1]?.players);
 }
 
+export interface DatedPlayerStats {
+  playerKey: string;
+  playerName: string;
+  team: string;
+  date: string;
+  stats: PlayerStats;
+}
+
+// A given calendar date's stats never change once that date is in the past, so caching by
+// date+player-set lets a 15-minute dashboard refresh reuse yesterday's already-fetched history
+// instead of re-issuing ~10 Yahoo calls per player batch every time.
+const dateStatsCache = new Map<string, { expiresAt: number; value: DatedPlayerStats[] }>();
+const DATE_CACHE_TTL_MS = 12 * 60 * 60_000;
+
+// Fetches one day's worth of box-score-equivalent stats for a batch of players directly from
+// Yahoo's own Fantasy API (`stats;type=date`) — the same authenticated endpoint the rest of this
+// file already uses for league/roster data, so it carries none of the third-party-blocking risk
+// that NBA.com/ESPN do. Looping this over the last N days reconstructs a real per-game history
+// without needing any external NBA data provider or player-id matching at all.
+export async function fetchPlayerStatsByDate(playerKeys: string[], date: string, tokens: YahooTokens): Promise<DatedPlayerStats[]> {
+  if (!playerKeys.length) return [];
+  const sortedKeys = [...playerKeys].sort();
+  const cacheKey = `${date}|${sortedKeys.join(',')}`;
+  const cached = dateStatsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const keys = sortedKeys.map(key => encodeURIComponent(key)).join(',');
+  const data = await yahooFetch(`/players;player_keys=${keys}/stats;type=date;date=${date}`, tokens);
+  const value = parseDatedStats(data?.fantasy_content?.players, date);
+  dateStatsCache.set(cacheKey, { expiresAt: Date.now() + DATE_CACHE_TTL_MS, value });
+  return value;
+}
+
+// Fallback for deployments where Yahoo rejects arbitrary past dates: weekly aggregates are
+// coarser (one data point per week instead of per game) but still far more informative for
+// recency-weighting than a single season-to-date average.
+export async function fetchPlayerStatsByWeek(playerKeys: string[], week: number, tokens: YahooTokens): Promise<DatedPlayerStats[]> {
+  if (!playerKeys.length) return [];
+  const keys = playerKeys.map(key => encodeURIComponent(key)).join(',');
+  const data = await yahooFetch(`/players;player_keys=${keys}/stats;type=week;week=${week}`, tokens);
+  return parseDatedStats(data?.fantasy_content?.players, `week-${week}`);
+}
+
+function parseDatedStats(players: any, date: string): DatedPlayerStats[] {
+  return collectionItems<any>(players).flatMap(playerEntry => {
+    const p = playerEntry?.player;
+    if (!p) return [];
+    const info = p[0];
+    const statsNode = p.find((part: any) => part?.player_stats)?.player_stats?.stats?.stat;
+    if (!statsNode) return [];
+    const stats = parseStats(statsNode);
+    if (stats.GP <= 0) return [];
+    return [{
+      playerKey: info.player_key,
+      playerName: info.name?.full || 'Unknown',
+      team: info.editorial_team_abbr || '',
+      date,
+      stats,
+    }];
+  });
+}
+
 export function getSnakePickOrder(myPosition: number, totalTeams: number, totalRounds: number): number[] {
   const picks: number[] = [];
   for (let round = 1; round <= totalRounds; round++) {

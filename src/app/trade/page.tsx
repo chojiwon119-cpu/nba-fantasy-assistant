@@ -1,8 +1,10 @@
 'use client';
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Player } from '@/types';
 import Link from 'next/link';
+
+const LEAGUE_STORAGE_KEY = 'nba-assistant-selected-league';
 
 interface TradeResult {
   giving: Player[]; receiving: Player[];
@@ -13,7 +15,17 @@ interface TradeResult {
 
 function TradeContent() {
   const searchParams = useSearchParams();
-  const leagueKey = searchParams.get('league_key') || '';
+  const [leagueKey, setLeagueKey] = useState(searchParams.get('league_key') || '');
+  useEffect(() => {
+    if (leagueKey) return;
+    const timer = window.setTimeout(() => {
+      try {
+        const stored = window.localStorage.getItem(LEAGUE_STORAGE_KEY);
+        if (stored) setLeagueKey(stored);
+      } catch { /* ignore */ }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [leagueKey]);
   const [givingKeys, setGivingKeys] = useState('');
   const [receivingKeys, setReceivingKeys] = useState('');
   const [result, setResult] = useState<TradeResult | null>(null);
